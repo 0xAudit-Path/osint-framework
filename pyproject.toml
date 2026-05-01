@@ -1,0 +1,37 @@
+[tool.poetry]
+name = "osint-framework"
+version = "0.1.0"
+description = "Framework modular de reconocimiento OSINT"
+authors = ["0xAudit-Path"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "osint"}]
+homepage = "https://github.com/0xAudit-Path/osint-framework"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-asyncio = "^0.23"
+pytest-cov = "^5.0"
+ruff = "^0.4"
+mypy = "^1.9"
+
+[tool.poetry.scripts]
+osint = "osint.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry-core.masonry.api"
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
