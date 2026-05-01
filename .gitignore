@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.mypy_cache/
+.ruff_cache/
+
+# Poetry
+.venv/
+
+# Proyecto — NUNCA subir config con API keys
+config.yaml
+
+# Informes generados
+reports/
+
+# Tests
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
