@@ -12,6 +12,8 @@ homepage = "https://github.com/0xAudit-Path/osint-framework"
 python = "^3.11"
 pydantic = "^2.6"
 pyyaml = "^6.0"
+rich = "^15.0.0"
+structlog = "^25.5.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
