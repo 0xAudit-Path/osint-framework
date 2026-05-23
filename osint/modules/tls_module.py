@@ -85,7 +85,9 @@ class TlsModule(BaseModule):
                 limpio = nombre.lstrip("*.")
 
                 # Ignora duplicados y nombres que no pertenecen al dominio objetivo
-                if limpio in nombres_vistos or not limpio.endswith(dominio):
+                if limpio in nombres_vistos or not (
+                    limpio == dominio or limpio.endswith(f".{dominio}")
+                ):
                     continue
                 nombres_vistos.add(limpio)
 
