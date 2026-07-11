@@ -1,0 +1,18 @@
+apis:
+  groq: "API_KEY_GROQ"
+  shodan: "API_KEY_SHODAN"
+  hibp: "API_KEY_HIBP"  # opcional — planes desde ~3€/mes en haveibeenpwned.com/API/Key
+                        # sin key se usa breach.directory (gratuito, 10 búsquedas/día)
+
+
+ai:
+  enabled: true
+  provider: "groq"
+  model: "llama-3.1-70b-versatile"
+  features:
+    executive_summary: true
+    correlations: true
+    dork_generation: true
+    chat: true
+
+
