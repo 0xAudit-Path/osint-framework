@@ -6,7 +6,6 @@ from osint.core.datastore import Severity
 from osint.core.orchestrator import BaseModule
 from osint.modules.leaks_module import LeaksModule
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -318,7 +317,9 @@ def test_detalle_brecha_spam_list_se_ignora(modulo_con_hibp):
 
 
 def test_detalle_brecha_incluye_metadatos(modulo_con_hibp):
-    """El finding de detalle debe incluir fecha, total de afectados y datos expuestos."""
+    """
+    El finding de detalle debe incluir fecha, total de afectados y datos expuestos.
+    """
     modulo_con_hibp._procesar_detalle_brecha(HIBP_BRECHA_DETALLE_MOCK, "ejemplo.com")
 
     meta = modulo_con_hibp.findings[0].metadata
@@ -384,7 +385,9 @@ async def test_breach_directory_429_crea_finding_rate_limited(modulo_sin_key):
 
 @pytest.mark.asyncio
 async def test_breach_directory_error_red_no_falla(modulo_sin_key):
-    """Un error de red no debe propagar la excepción al orquestador."""
+    """
+    Un error de red no debe propagar la excepción al orquestador.
+    """
     with patch("aiohttp.ClientSession", side_effect=Exception("Timeout")):
         await modulo_sin_key._consultar_breach_directory("ejemplo.com")
 
