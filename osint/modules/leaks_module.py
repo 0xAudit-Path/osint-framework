@@ -55,6 +55,13 @@ class LeaksModule(BaseModule):
     def requires_api_key(self) -> Optional[str]:
         return "hibp"
 
+    def is_available(self) -> bool:
+        """
+        Siempre disponible aunque no haya key de HIBP,
+        porque breach.directory funciona sin autenticación.
+        """
+        return True
+
     async def run(self, target: str) -> list[Finding]:
         """
         Consulta filtraciones usando el proveedor disponible.
@@ -303,44 +310,44 @@ class LeaksModule(BaseModule):
         )
 
     async def _consultar_breach_directory(self, dominio: str):
-    """
-    Consulta breach.directory como alternativa gratuita a HIBP.
+        """
+        Consulta breach.directory como alternativa gratuita a HIBP.
 
-    breach.directory es una base de datos pública de filtraciones
-    que no requiere API key ni registro. Tiene un límite de
-    10 búsquedas diarias en el tier gratuito.
+        breach.directory es una base de datos pública de filtraciones
+        que no requiere API key ni registro. Tiene un límite de
+        10 búsquedas diarias en el tier gratuito.
 
-    La respuesta incluye si el dominio aparece en filtraciones
-    conocidas y una muestra de los registros encontrados.
-    """
-    url = self.BREACH_DIRECTORY_URL.format(domain=dominio)
-    headers = {"User-Agent": "osint-framework-tfg"}
-    timeout = aiohttp.ClientTimeout(total=15)
+        La respuesta incluye si el dominio aparece en filtraciones
+        conocidas y una muestra de los registros encontrados.
+        """
+        url = self.BREACH_DIRECTORY_URL.format(domain=dominio)
+        headers = {"User-Agent": "osint-framework-tfg"}
+        timeout = aiohttp.ClientTimeout(total=15)
 
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers) as r:
-                if r.status == 429:
-                    # Límite diario alcanzado
-                    self.add_finding(
-                        type="leaks_rate_limited",
-                        value=dominio,
-                        severity=Severity.INFO,
-                        source="breach.directory",
-                        metadata={
-                            "message": "Límite diario de breach.directory alcanzado (10/día). "
-                                       "Configura una key de HIBP para sin límites.",
-                        },
-                    )
-                    return
-                if r.status != 200:
-                    return
-                data = await r.json()
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as r:
+                    if r.status == 429:
+                        # Límite diario alcanzado
+                        self.add_finding(
+                            type="leaks_rate_limited",
+                            value=dominio,
+                            severity=Severity.INFO,
+                            source="breach.directory",
+                            metadata={
+                                "message": "Límite diario de breach.directory alcanzado (10/día). "
+                                        "Configura una key de HIBP para sin límites.",
+                            },
+                        )
+                        return
+                    if r.status != 200:
+                        return
+                    data = await r.json()
 
-        self._procesar_breach_directory(data, dominio)
+            self._procesar_breach_directory(data, dominio)
 
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     def _procesar_breach_directory(self, data: dict, dominio: str):
         """
