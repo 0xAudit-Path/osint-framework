@@ -3,6 +3,8 @@ apis:
   shodan: "API_KEY_SHODAN"
   hibp: "API_KEY_HIBP"  # opcional — planes desde ~3€/mes en haveibeenpwned.com/API/Key
                         # sin key se usa breach.directory (gratuito, 10 búsquedas/día)
+  twitter: "API_KEY_TWITTER" #opcional — bearer token gratuito en developer.twitter.com
+                             # sin token se usan Google Dorks como fallback
 
 
 ai:
