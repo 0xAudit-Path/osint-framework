@@ -11,6 +11,10 @@ __pycache__/
 # Proyecto — NUNCA subir config con API keys
 config.yaml
 
+# Pruebas locales
+probar_analyst.py
+probar_groq.py
+
 # Informes generados
 reports/
 
