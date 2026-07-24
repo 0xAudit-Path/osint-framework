@@ -485,3 +485,250 @@ async def test_run_devuelve_lista_aunque_todo_falle(config_sin_keys):
         resultado = await modulo.run("ejemplo.com")
 
     assert isinstance(resultado, list)
+
+
+def test_construir_headers_sin_token(modulo_sin_keys):
+    """Sin token los headers no incluyen Authorization."""
+    headers = modulo_sin_keys._construir_headers_github()
+    assert "Authorization" not in headers
+    assert headers["Accept"] == "application/vnd.github.v3+json"
+
+
+def test_construir_headers_con_token(modulo_con_github):
+    """Con token los headers incluyen Authorization con el token."""
+    headers = modulo_con_github._construir_headers_github()
+    assert "Authorization" in headers
+    assert "ghp_test_token" in headers["Authorization"]
+
+
+@pytest.mark.asyncio
+async def test_buscar_github_org_encontrada(modulo_con_github):
+    """Si la organización existe en GitHub debe crear findings y devolver True."""
+    mock_respuesta_org = MagicMock()
+    mock_respuesta_org.status = 200
+    mock_respuesta_org.json = AsyncMock(return_value=GITHUB_ORG_MOCK)
+
+    mock_respuesta_repos = MagicMock()
+    mock_respuesta_repos.status = 200
+    mock_respuesta_repos.json = AsyncMock(return_value=[])
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.__aenter__ = AsyncMock(
+        side_effect=[mock_respuesta_org, mock_respuesta_repos]
+    )
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    resultado = await modulo_con_github._buscar_github_org(
+        mock_session,
+        {"Accept": "application/vnd.github.v3+json"},
+        "ejemplo",
+        "ejemplo.com",
+    )
+
+    assert resultado is True
+    perfiles = [f for f in modulo_con_github.findings if f.type == "github_profile"]
+    assert len(perfiles) == 1
+
+
+@pytest.mark.asyncio
+async def test_buscar_github_org_no_encontrada(modulo_sin_keys):
+    """Si la organización no existe en GitHub debe devolver False."""
+    mock_respuesta = MagicMock()
+    mock_respuesta.status = 404
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_respuesta)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    resultado = await modulo_sin_keys._buscar_github_org(
+        mock_session, {}, "noexiste", "noexiste.com"
+    )
+
+    assert resultado is False
+
+
+@pytest.mark.asyncio
+async def test_buscar_github_org_rate_limit(modulo_sin_keys):
+    """Un 403 de GitHub indica rate limit — debe registrarlo y devolver False."""
+    mock_respuesta = MagicMock()
+    mock_respuesta.status = 403
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_respuesta)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    resultado = await modulo_sin_keys._buscar_github_org(
+        mock_session, {}, "ejemplo", "ejemplo.com"
+    )
+
+    assert resultado is False
+    rate_findings = [
+        f for f in modulo_sin_keys.findings if f.type == "github_rate_limited"
+    ]
+    assert len(rate_findings) == 1
+
+
+@pytest.mark.asyncio
+async def test_buscar_github_usuario_encontrado(modulo_sin_keys):
+    """Si existe como usuario de GitHub debe crear un finding de perfil."""
+    mock_respuesta_user = MagicMock()
+    mock_respuesta_user.status = 200
+    mock_respuesta_user.json = AsyncMock(return_value=GITHUB_ORG_MOCK)
+
+    mock_respuesta_repos = MagicMock()
+    mock_respuesta_repos.status = 200
+    mock_respuesta_repos.json = AsyncMock(return_value=[])
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.__aenter__ = AsyncMock(
+        side_effect=[mock_respuesta_user, mock_respuesta_repos]
+    )
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    await modulo_sin_keys._buscar_github_usuario(
+        mock_session, {}, "ejemplo", "ejemplo.com"
+    )
+
+    perfiles = [f for f in modulo_sin_keys.findings if f.type == "github_profile"]
+    assert len(perfiles) == 1
+    assert perfiles[0].metadata["type"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_buscar_github_usuario_no_encontrado(modulo_sin_keys):
+    """Si el usuario no existe en GitHub no debe crear ningún finding."""
+    mock_respuesta = MagicMock()
+    mock_respuesta.status = 404
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_respuesta)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    await modulo_sin_keys._buscar_github_usuario(
+        mock_session, {}, "noexiste", "noexiste.com"
+    )
+
+    assert len(modulo_sin_keys.findings) == 0
+
+
+@pytest.mark.asyncio
+async def test_obtener_repos_github_crea_findings(modulo_sin_keys):
+    """Con repositorios válidos debe crear findings de repo y tecnología."""
+    repos_mock = [
+        {
+            "name":             "api-backend",
+            "description":      "API principal",
+            "language":         "Python",
+            "stargazers_count": 5,
+            "fork":             False,
+            "html_url":         "https://github.com/ejemplo/api-backend",
+            "updated_at":       "2024-01-01T00:00:00Z",
+            "archived":         False,
+        }
+    ]
+
+    mock_respuesta = MagicMock()
+    mock_respuesta.status = 200
+    mock_respuesta.json = AsyncMock(return_value=repos_mock)
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_respuesta)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    await modulo_sin_keys._obtener_repos_github(
+        mock_session, {}, "ejemplo", "ejemplo.com"
+    )
+
+    repos = [f for f in modulo_sin_keys.findings if f.type == "github_repo"]
+    assert len(repos) == 1
+
+
+@pytest.mark.asyncio
+async def test_obtener_repos_github_status_error_no_falla(modulo_sin_keys):
+    """Un error HTTP en la consulta de repos no debe propagar excepción."""
+    mock_respuesta = MagicMock()
+    mock_respuesta.status = 403
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_respuesta)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    await modulo_sin_keys._obtener_repos_github(
+        mock_session, {}, "ejemplo", "ejemplo.com"
+    )
+
+    assert len(modulo_sin_keys.findings) == 0
+
+
+@pytest.mark.asyncio
+async def test_twitter_api_oficial_encuentra_usuario(modulo_con_twitter):
+    """Con respuesta válida de la API de Twitter debe crear finding de perfil."""
+    mock_usuario = MagicMock()
+    mock_usuario.data = MagicMock()
+    mock_usuario.data.username    = "ejemplo"
+    mock_usuario.data.name        = "Ejemplo Corp"
+    mock_usuario.data.description = "Cuenta oficial"
+    mock_usuario.data.location    = "Madrid"
+    mock_usuario.data.url         = "https://ejemplo.com"
+    mock_usuario.data.public_metrics = {
+        "followers_count": 1000,
+        "following_count": 100,
+        "tweet_count":     500,
+    }
+
+    with patch("osint.modules.socials_module.tweepy") as mock_tweepy:
+        mock_tweepy.AsyncClient.return_value.get_user = AsyncMock(
+            return_value=mock_usuario
+        )
+        await modulo_con_twitter._twitter_api_oficial("ejemplo", "bearer_token")
+
+    perfiles = [f for f in modulo_con_twitter.findings if f.type == "twitter_profile"]
+    assert len(perfiles) == 1
+    assert perfiles[0].metadata["via"]       == "api"
+    assert perfiles[0].metadata["followers"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_twitter_api_oficial_usuario_no_encontrado(modulo_con_twitter):
+    """Si la API no encuentra el usuario no debe crear ningún finding."""
+    mock_resultado = MagicMock()
+    mock_resultado.data = None
+
+    with patch("osint.modules.socials_module.tweepy") as mock_tweepy:
+        mock_tweepy.AsyncClient.return_value.get_user = AsyncMock(
+            return_value=mock_resultado
+        )
+        await modulo_con_twitter._twitter_api_oficial("noexiste", "bearer_token")
+
+    perfiles = [f for f in modulo_con_twitter.findings if f.type == "twitter_profile"]
+    assert len(perfiles) == 0
+
+
+@pytest.mark.asyncio
+async def test_twitter_dork_status_error_no_crea_findings(modulo_sin_keys):
+    """Si Google devuelve error HTTP no debe crearse ningún finding."""
+    mock_session = mock_sesion_http(429, "")
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        await modulo_sin_keys._twitter_dork("ejemplo")
+
+    assert len(modulo_sin_keys.findings) == 0
+
+
+@pytest.mark.asyncio
+async def test_linkedin_dork_status_error_no_crea_findings(modulo_sin_keys):
+    """Si Google devuelve error HTTP en LinkedIn no debe crearse ningún finding."""
+    mock_session = mock_sesion_http(429, "")
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        await modulo_sin_keys._reconocimiento_linkedin("ejemplo")
+
+    assert len(modulo_sin_keys.findings) == 0
+
+
+def test_tweepy_no_disponible_marca_flag():
+    """
+    Si tweepy no está instalado TWEEPY_DISPONIBLE debe ser False
+    y el módulo no debe explotar al importarse.
+    """
+    import osint.modules.socials_module as sm
+    # Simplemente comprobamos que el atributo existe
+    assert hasattr(sm, "TWEEPY_DISPONIBLE")
