@@ -33,9 +33,6 @@ class ReportEngine:
         safe_target = target.replace("/", "_").replace(":", "_")
         base_filename = f"{safe_target}_report"
 
-        config_obj = cfg or self.cfg
-        groq_key = config_obj.get_api_key("groq") if config_obj else None
-
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         for fmt in self.formats:
@@ -53,7 +50,7 @@ class ReportEngine:
                 elif fmt in ("html", "pdf"):
                     # Generamos el HTML (si piden PDF, el HTML resultante es imprimible a PDF directamente)
                     out = self.output_dir / f"{base_filename}.html"
-                    HTMLExporter.export(datastore, target, out, insights, groq_api_key=groq_key)
+                    HTMLExporter.export(datastore, target, out, insights)
                     generated_files.append(out)
 
             except Exception as e:

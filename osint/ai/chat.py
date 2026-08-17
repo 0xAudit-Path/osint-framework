@@ -284,6 +284,6 @@ class InteractiveChat:
         response = await self.provider.complete(
             messages=messages,
             temperature=0.3,
-            max_tokens=800,
+            max_tokens=2000,
         )
         return response.content

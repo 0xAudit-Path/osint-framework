@@ -1,4 +1,4 @@
-import json
+import html
 import re
 from pathlib import Path
 
@@ -7,9 +7,28 @@ from osint.core.datastore import DataStore, Severity
 
 class HTMLExporter:
     """
-    Genera un informe HTML técnico de nivel ejecutivo con un Widget de IA 
-    interactivo embebido para consultar los hallazgos en el navegador.
+    Genera un informe HTML técnico de nivel ejecutivo: dashboard estático
+    con KPIs, gráficos de severidad/módulo, score de riesgo y tabla de
+    evidencias filtrable.
+
+    Es completamente autocontenido y offline (sin llamadas a APIs externas
+    ni CDNs), por lo que es seguro entregarlo a un cliente sin que dependa
+    de ninguna key ni conexión.
+
+    El chat interactivo con IA vive únicamente en la CLI (`osint chat`),
+    donde la clave de API nunca sale de la máquina del auditor.
     """
+
+    # Colores usados en los gráficos SVG, alineados con las variables CSS
+    # de severidad para que el dashboard sea visualmente consistente.
+    COLOR_SEVERIDAD = {
+        Severity.HIGH:   "#ef4444",
+        Severity.MEDIUM: "#f59e0b",
+        Severity.LOW:    "#3b82f6",
+        Severity.INFO:   "#94a3b8",
+    }
+
+    ORDEN_SEVERIDAD = [Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO]
 
     @staticmethod
     def _limpiar_valor(valor: str) -> str:
@@ -23,6 +42,153 @@ class HTMLExporter:
                 return match_text.group(1)
         return valor
 
+    @staticmethod
+    def _esc(valor) -> str:
+        """
+        Escapa cualquier valor antes de insertarlo en el HTML.
+
+        Los hallazgos (títulos HTTP, banners, nombres de dominio...) vienen
+        de la infraestructura del objetivo auditado, no del auditor, así que
+        deben tratarse como no confiables antes de insertarlos en el informe.
+        """
+        return html.escape(str(valor), quote=True)
+
+    @classmethod
+    def _texto_insight_a_html(cls, contenido: str) -> str:
+        """
+        Convierte el texto del insight (generado por la IA en markdown ligero)
+        a HTML seguro: escapa el contenido y luego interpreta **negrita**.
+        El resto del formato (saltos de línea, guiones de lista) se conserva
+        tal cual gracias a `white-space: pre-line` en el CSS.
+        """
+        escapado = cls._esc(contenido)
+        # Convertimos **negrita** en <strong> después de escapar,
+        # así no hay riesgo de que el propio contenido inyecte HTML.
+        return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escapado)
+
+    @classmethod
+    def _parsear_risk_score(cls, contenido: str):
+        """
+        Intenta extraer score (0-100) y nivel del texto del insight de riesgo.
+        Devuelve None si el formato no coincide, para poder hacer fallback
+        a mostrarlo como un insight normal sin perder información.
+        """
+        m = re.search(r"Score de riesgo:\s*(\d+)\s*/\s*100\s*[—-]\s*(\w+)", contenido)
+        if not m:
+            return None
+        return int(m.group(1)), m.group(2)
+
+    @classmethod
+    def _contar_por_modulo(cls, datastore: DataStore) -> list[tuple[str, int]]:
+        """Cuenta hallazgos por módulo, ordenados de mayor a menor."""
+        conteo: dict[str, int] = {}
+        for f in datastore:
+            conteo[f.module] = conteo.get(f.module, 0) + 1
+        return sorted(conteo.items(), key=lambda x: x[1], reverse=True)
+
+    @classmethod
+    def _grafico_donut_severidad(cls, by_sev: dict) -> str:
+        """
+        Genera un donut chart en SVG puro con la distribución por severidad.
+        Sin JS ni librerías externas: se calcula todo en Python.
+        """
+        total = sum(by_sev.get(s, 0) for s in cls.ORDEN_SEVERIDAD)
+        if total == 0:
+            return '<div class="chart-empty">Sin hallazgos que representar.</div>'
+
+        radio = 54
+        circunferencia = 2 * 3.14159265 * radio
+        offset_acumulado = 0.0
+        segmentos = ""
+        leyenda = ""
+
+        for sev in cls.ORDEN_SEVERIDAD:
+            cantidad = by_sev.get(sev, 0)
+            if cantidad == 0:
+                continue
+            color = cls.COLOR_SEVERIDAD[sev]
+            largo_segmento = circunferencia * (cantidad / total)
+            segmentos += (
+                f'<circle cx="65" cy="65" r="{radio}" fill="none" '
+                f'stroke="{color}" stroke-width="18" '
+                f'stroke-dasharray="{largo_segmento:.2f} {circunferencia - largo_segmento:.2f}" '
+                f'stroke-dashoffset="{-offset_acumulado:.2f}" />'
+            )
+            offset_acumulado += largo_segmento
+
+            porcentaje = round(100 * cantidad / total)
+            leyenda += f"""
+                <div class="legend-item">
+                    <span class="legend-dot" style="background:{color};"></span>
+                    <span class="legend-label">{sev.upper()}</span>
+                    <span class="legend-value">{cantidad} ({porcentaje}%)</span>
+                </div>"""
+
+        return f"""
+        <div class="donut-wrapper">
+            <svg viewBox="0 0 130 130" class="donut-svg">
+                <g transform="rotate(-90 65 65)">
+                    <circle cx="65" cy="65" r="{radio}" fill="none" stroke="#e2e8f0" stroke-width="18" />
+                    {segmentos}
+                </g>
+                <text x="65" y="61" text-anchor="middle" class="donut-total">{total}</text>
+                <text x="65" y="78" text-anchor="middle" class="donut-label">hallazgos</text>
+            </svg>
+            <div class="donut-legend">{leyenda}</div>
+        </div>
+        """
+
+    @classmethod
+    def _grafico_barras_modulo(cls, datastore: DataStore) -> str:
+        """Genera un gráfico de barras horizontal (HTML/CSS puro) por módulo."""
+        conteos = cls._contar_por_modulo(datastore)
+        if not conteos:
+            return '<div class="chart-empty">Sin hallazgos que representar.</div>'
+
+        maximo = max(c for _, c in conteos)
+        filas = ""
+        for modulo, cantidad in conteos:
+            pct = round(100 * cantidad / maximo) if maximo else 0
+            filas += f"""
+                <div class="bar-row">
+                    <span class="bar-label">{cls._esc(modulo)}</span>
+                    <div class="bar-track">
+                        <div class="bar-fill" style="width:{pct}%;"></div>
+                    </div>
+                    <span class="bar-value">{cantidad}</span>
+                </div>"""
+        return f'<div class="bar-chart">{filas}</div>'
+
+    @classmethod
+    def _panel_risk_score(cls, score: int, nivel: str, contenido_completo: str) -> str:
+        """Panel destacado del score de riesgo global, con gauge de color."""
+        if score >= 70:
+            color = "#ef4444"
+        elif score >= 40:
+            color = "#f59e0b"
+        else:
+            color = "#16a34a"
+
+        # El resto del texto (justificación y factores) se muestra debajo del gauge,
+        # reutilizando el mismo conversor seguro de markdown ligero.
+        cuerpo_html = cls._texto_insight_a_html(contenido_completo)
+
+        return f"""
+        <div class="risk-panel">
+            <div class="risk-gauge-wrap">
+                <div class="risk-gauge-track">
+                    <div class="risk-gauge-fill" style="width:{score}%; background:{color};"></div>
+                </div>
+                <div class="risk-gauge-numbers">
+                    <span class="risk-score-big" style="color:{color};">{score}</span>
+                    <span class="risk-score-max">/100</span>
+                    <span class="risk-nivel-badge" style="background:{color};">{cls._esc(nivel)}</span>
+                </div>
+            </div>
+            <div class="risk-detail">{cuerpo_html}</div>
+        </div>
+        """
+
     @classmethod
     def export(
         cls,
@@ -30,40 +196,34 @@ class HTMLExporter:
         target: str,
         output_path: Path,
         insights: list | None = None,
-        groq_api_key: str | None = None,
     ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         summary = datastore.summary()
         by_sev = summary.get("by_severity", {})
+        target_esc = cls._esc(target)
 
-        # Serializamos los hallazgos e insights a JSON para el widget de IA en JS
-        findings_raw = [
-            {
-                "module": f.module,
-                "type": f.type,
-                "value": cls._limpiar_valor(f.value),
-                "severity": f.severity,
-                "source": f.source or "-",
-            }
-            for f in datastore
-        ]
-        
-        insights_raw = [
-            {
-                "title": i.title,
-                "content": i.content,
-                "severity": i.severity,
-            }
-            for i in (insights or [])
-        ]
+        # Separamos el insight de risk_score (si existe y se puede parsear)
+        # del resto, porque se muestra en un panel destacado aparte.
+        insights = insights or []
+        risk_insight = None
+        risk_parseado = None
+        otros_insights = []
+        for insight in insights:
+            if insight.type == "risk_score" and risk_parseado is None:
+                parseo = cls._parsear_risk_score(insight.content)
+                if parseo:
+                    risk_insight = insight
+                    risk_parseado = parseo
+                    continue
+            otros_insights.append(insight)
 
         html_content = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Informe de Auditoría OSINT - {target}</title>
+    <title>Informe de Auditoría OSINT - {target_esc}</title>
     <style>
         :root {{
             --primary: #0f172a;
@@ -120,7 +280,7 @@ class HTMLExporter:
             align-items: flex-start;
             border-bottom: 2px solid var(--primary);
             padding-bottom: 1.5rem;
-            margin-bottom: 2rem;
+            margin-bottom: 1.5rem;
         }}
 
         .brand-title {{
@@ -187,6 +347,27 @@ class HTMLExporter:
             border-color: var(--text-muted);
         }}
 
+        /* Nota del chat CLI */
+        .cli-note {{
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            color: #1e40af;
+            border-radius: 6px;
+            padding: 0.7rem 1rem;
+            font-size: 0.85rem;
+            margin-bottom: 2rem;
+        }}
+
+        .cli-note code {{
+            background: rgba(30, 64, 175, 0.1);
+            padding: 0.1rem 0.4rem;
+            border-radius: 4px;
+            font-weight: 700;
+        }}
+
         /* Tarjetas Métricas KPI */
         .kpi-grid {{
             display: grid;
@@ -226,6 +407,197 @@ class HTMLExporter:
             margin: 2.5rem 0 1.2rem 0;
             padding-bottom: 0.5rem;
             border-bottom: 1px solid var(--border);
+        }}
+
+        /* Panel de Risk Score */
+        .risk-panel {{
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            gap: 2rem;
+            background: var(--bg-body);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem 1.75rem;
+            margin-bottom: 2.5rem;
+            align-items: center;
+        }}
+
+        .risk-gauge-track {{
+            width: 100%;
+            height: 14px;
+            background: #e2e8f0;
+            border-radius: 7px;
+            overflow: hidden;
+        }}
+
+        .risk-gauge-fill {{
+            height: 100%;
+            border-radius: 7px;
+            transition: width 0.3s;
+        }}
+
+        .risk-gauge-numbers {{
+            display: flex;
+            align-items: baseline;
+            gap: 0.4rem;
+            margin-top: 0.75rem;
+        }}
+
+        .risk-score-big {{
+            font-size: 2.4rem;
+            font-weight: 800;
+            line-height: 1;
+        }}
+
+        .risk-score-max {{
+            font-size: 1rem;
+            color: var(--text-muted);
+            font-weight: 600;
+        }}
+
+        .risk-nivel-badge {{
+            margin-left: auto;
+            color: white;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            padding: 0.25rem 0.6rem;
+            border-radius: 4px;
+            letter-spacing: 0.05em;
+        }}
+
+        .risk-detail {{
+            font-size: 0.92rem;
+            color: #334155;
+            white-space: pre-line;
+            line-height: 1.6;
+            border-left: 1px solid var(--border);
+            padding-left: 1.75rem;
+        }}
+
+        /* Gráficos: donut de severidad y barras por módulo */
+        .charts-grid {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 2.5rem;
+        }}
+
+        .chart-card {{
+            background: var(--bg-body);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+        }}
+
+        .chart-card h4 {{
+            margin: 0 0 1rem 0;
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }}
+
+        .chart-empty {{
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-style: italic;
+        }}
+
+        .donut-wrapper {{
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }}
+
+        .donut-svg {{
+            width: 130px;
+            height: 130px;
+            flex-shrink: 0;
+        }}
+
+        .donut-total {{
+            font-size: 1.6rem;
+            font-weight: 800;
+            fill: var(--primary);
+        }}
+
+        .donut-label {{
+            font-size: 0.6rem;
+            fill: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }}
+
+        .donut-legend {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            min-width: 150px;
+        }}
+
+        .legend-item {{
+            display: flex;
+            align-items: center;
+            font-size: 0.8rem;
+        }}
+
+        .legend-dot {{
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-right: 0.5rem;
+        }}
+
+        .legend-label {{
+            font-weight: 700;
+            color: var(--text-dark);
+        }}
+
+        .legend-value {{
+            color: var(--text-muted);
+            margin-left: 0.75rem;
+        }}
+
+        .bar-chart {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.7rem;
+        }}
+
+        .bar-row {{
+            display: grid;
+            grid-template-columns: 90px 1fr 34px;
+            align-items: center;
+            gap: 0.6rem;
+            font-size: 0.8rem;
+        }}
+
+        .bar-label {{
+            font-weight: 700;
+            color: var(--text-dark);
+            text-transform: capitalize;
+        }}
+
+        .bar-track {{
+            background: #e2e8f0;
+            border-radius: 4px;
+            height: 10px;
+            overflow: hidden;
+        }}
+
+        .bar-fill {{
+            background: var(--accent);
+            height: 100%;
+            border-radius: 4px;
+        }}
+
+        .bar-value {{
+            text-align: right;
+            color: var(--text-muted);
+            font-weight: 700;
         }}
 
         .insight-card {{
@@ -323,155 +695,13 @@ class HTMLExporter:
             word-break: break-all;
         }}
 
-        /* =======================================================
-           WIDGET DE CHAT IA FLOTANTE EMBEBIDO EN NAVEGADOR
-           ======================================================= */
-        #ai-chat-widget {{
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 9999;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        }}
-
-        #ai-chat-toggle {{
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: 30px;
-            padding: 0.8rem 1.4rem;
-            font-weight: 700;
-            font-size: 0.9rem;
-            cursor: pointer;
-            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: transform 0.2s;
-        }}
-
-        #ai-chat-toggle:hover {{
-            transform: translateY(-2px);
-            background: var(--primary-light);
-        }}
-
-        #ai-chat-box {{
-            display: none;
-            width: 380px;
-            height: 520px;
-            background: #ffffff;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
-            flex-direction: column;
-            overflow: hidden;
-            position: absolute;
-            bottom: 60px;
-            right: 0;
-        }}
-
-        .chat-header {{
-            background: var(--primary);
-            color: white;
-            padding: 0.8rem 1rem;
-            font-weight: 700;
-            font-size: 0.9rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }}
-
-        .chat-header button {{
-            background: transparent;
-            border: none;
-            color: white;
-            font-size: 1.1rem;
-            cursor: pointer;
-        }}
-
-        .chat-config {{
-            background: var(--bg-body);
-            padding: 0.5rem 0.8rem;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            gap: 0.5rem;
-            font-size: 0.75rem;
-        }}
-
-        .chat-config select, .chat-config input {{
-            font-size: 0.75rem;
-            padding: 0.2rem 0.4rem;
-            border: 1px solid var(--border);
-            border-radius: 4px;
-        }}
-
-        .chat-messages {{
-            flex: 1;
-            padding: 0.8rem;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 0.6rem;
-            font-size: 0.85rem;
-            background: #fafafa;
-        }}
-
-        .chat-msg {{
-            padding: 0.6rem 0.8rem;
-            border-radius: 8px;
-            max-width: 85%;
-            line-height: 1.4;
-            white-space: pre-wrap;
-        }}
-
-        .chat-msg.user {{
-            background: var(--accent);
-            color: white;
-            align-self: flex-end;
-            border-bottom-right-radius: 2px;
-        }}
-
-        .chat-msg.assistant {{
-            background: #ffffff;
-            color: var(--text-dark);
-            border: 1px solid var(--border);
-            align-self: flex-start;
-            border-bottom-left-radius: 2px;
-        }}
-
-        .chat-input-area {{
-            padding: 0.6rem;
-            border-top: 1px solid var(--border);
-            background: white;
-            display: flex;
-            gap: 0.4rem;
-        }}
-
-        .chat-input-area input {{
-            flex: 1;
-            padding: 0.5rem;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            font-size: 0.85rem;
-            outline: none;
-        }}
-
-        .chat-input-area button {{
-            background: var(--primary);
-            color: white;
-            border: none;
-            padding: 0.5rem 0.8rem;
-            border-radius: 6px;
-            font-weight: 700;
-            cursor: pointer;
-        }}
-
         /* Ocultar elementos en la impresión a PDF */
         @media print {{
             body {{ background: #ffffff; padding: 0; }}
             .report-paper {{ border: none; box-shadow: none; padding: 0; max-width: 100%; }}
-            .btn-print, #ai-chat-widget, .filter-container {{ display: none !important; }}
+            .btn-print, .filter-container, .cli-note {{ display: none !important; }}
             .section-title {{ page-break-after: avoid; }}
+            .risk-panel, .chart-card {{ page-break-inside: avoid; }}
             tr {{ page-break-inside: avoid; }}
         }}
     </style>
@@ -486,12 +716,17 @@ class HTMLExporter:
                     <span class="brand-logo">ARGOSMIND</span>
                     <h1>Informe Técnico de Reconocimiento OSINT</h1>
                 </div>
-                <div class="subtitle">Objetivo auditado: <strong>{target}</strong></div>
+                <div class="subtitle">Objetivo auditado: <strong>{target_esc}</strong></div>
             </div>
             <div class="header-actions">
                 <span class="confidential-tag">Confidencial / Uso Interno</span>
                 <button class="btn-print" onclick="window.print()">Imprimir / Guardar a PDF</button>
             </div>
+        </div>
+
+        <div class="cli-note">
+            ¿Quieres explorar estos hallazgos de forma conversacional?
+            Ejecuta <code>poetry run osint chat {target_esc}</code> en tu terminal.
         </div>
 
         <!-- Tarjetas KPI -->
@@ -515,21 +750,42 @@ class HTMLExporter:
         </div>
 """
 
-        # Añadimos los Insights de la IA si existen
-        if insights:
+        # Panel destacado de Risk Score (si la IA lo generó y se pudo parsear)
+        if risk_insight and risk_parseado:
+            score, nivel = risk_parseado
+            html_content += '<div class="section-title">Score de Riesgo Global</div>'
+            html_content += cls._panel_risk_score(score, nivel, risk_insight.content)
+
+        # Gráficos: distribución por severidad y por módulo
+        html_content += f"""
+        <div class="section-title">Resumen Visual</div>
+        <div class="charts-grid">
+            <div class="chart-card">
+                <h4>Distribución por Severidad</h4>
+                {cls._grafico_donut_severidad(by_sev)}
+            </div>
+            <div class="chart-card">
+                <h4>Hallazgos por Módulo</h4>
+                {cls._grafico_barras_modulo(datastore)}
+            </div>
+        </div>
+        """
+
+        # Resto de insights de IA (resumen ejecutivo, correlaciones, dorks...)
+        if otros_insights:
             html_content += '<div class="section-title">Análisis de Inteligencia Asistida (IA)</div>'
-            for insight in insights:
+            for insight in otros_insights:
                 html_content += f"""
                 <div class="insight-card">
-                    <h3>{insight.title}</h3>
-                    <div class="content">{insight.content}</div>
+                    <h3>{cls._esc(insight.title)}</h3>
+                    <div class="content">{cls._texto_insight_a_html(insight.content)}</div>
                 </div>
                 """
 
         # Tabla de Hallazgos
         html_content += f"""
         <div class="section-title">Evidencias e Infraestructura Identificada</div>
-        
+
         <div class="filter-container">
             <input type="text" id="searchInput" onkeyup="filtrarTabla()" placeholder="Buscar por valor o dominio...">
             <select id="sevFilter" onchange="filtrarTabla()">
@@ -555,183 +811,39 @@ class HTMLExporter:
         """
 
         for f in datastore:
-            valor_limpio = cls._limpiar_valor(f.value)
+            valor_limpio = cls._esc(cls._limpiar_valor(f.value))
             sev_class = f"badge-{f.severity}"
             html_content += f"""
-                <tr data-sev="{f.severity}">
-                    <td><span class="badge {sev_class}">{f.severity}</span></td>
-                    <td><strong>{f.module}</strong></td>
-                    <td>{f.type}</td>
+                <tr data-sev="{cls._esc(f.severity)}">
+                    <td><span class="badge {sev_class}">{cls._esc(f.severity)}</span></td>
+                    <td><strong>{cls._esc(f.module)}</strong></td>
+                    <td>{cls._esc(f.type)}</td>
                     <td><code>{valor_limpio}</code></td>
-                    <td style="color: var(--text-muted); font-size: 0.8rem;">{f.source or '-'}</td>
+                    <td style="color: var(--text-muted); font-size: 0.8rem;">{cls._esc(f.source or '-')}</td>
                 </tr>
             """
 
-        html_content += f"""
+        html_content += """
             </tbody>
         </table>
     </div>
 
-    <!-- WIDGET DE CHAT IA EMBEBIDO -->
-    <div id="ai-chat-widget">
-        <button id="ai-chat-toggle" onclick="toggleChat()">
-            🤖 Consultar Asistente IA
-        </button>
-        <div id="ai-chat-box">
-            <div class="chat-header">
-                <span>ArgosMind Assistant</span>
-                <button onclick="toggleChat()">✕</button>
-            </div>
-            <div class="chat-config">
-                <select id="providerSelect" onchange="actualizarProveedor()">
-                    <option value="ollama">Ollama (Local)</option>
-                    <option value="groq">Groq Cloud (API)</option>
-                </select>
-                <input type="password" id="apiKeyInput" placeholder="Groq API Key (opcional)" style="display:none; flex:1;">
-            </div>
-            <div class="chat-messages" id="chatMessages">
-                <div class="chat-msg assistant">¡Hola! Soy la IA de ArgosMind. Puedes hacerme cualquier pregunta técnica sobre los datos recopilados en este informe de {target}.</div>
-            </div>
-            <div class="chat-input-area">
-                <input type="text" id="chatInput" placeholder="Escribe tu consulta..." onkeypress="handleKeyPress(event)">
-                <button onclick="enviarMensaje()">Enviar</button>
-            </div>
-        </div>
-    </div>
-
     <script>
-        // Datos e integración IA
-        const TARGET = "{target}";
-        const GROQ_KEY_CONFIG = "{groq_api_key or ''}";        
-        const FINDINGS_DATA = {json.dumps(findings_raw, ensure_ascii=False)};
-        const INSIGHTS_DATA = {json.dumps(insights_raw, ensure_ascii=False)};
-
-        // Filtros de la tabla
-        function filtrarTabla() {{
+        // Filtros de la tabla de evidencias
+        function filtrarTabla() {
             const search = document.getElementById("searchInput").value.toLowerCase();
             const sev = document.getElementById("sevFilter").value.toLowerCase();
             const rows = document.querySelectorAll("#findingsTable tbody tr");
 
-            rows.forEach(row => {{
+            rows.forEach(row => {
                 const text = row.innerText.toLowerCase();
                 const rowSev = row.getAttribute("data-sev");
                 const matchText = text.includes(search);
                 const matchSev = !sev || rowSev === sev;
 
                 row.style.display = (matchText && matchSev) ? "" : "none";
-            }});
-        }}
-
-        // Inicialización del Widget de Chat IA
-        window.addEventListener("DOMContentLoaded", () => {{
-            const provSelect = document.getElementById("providerSelect");
-            
-            if (GROQ_KEY_CONFIG && GROQ_KEY_CONFIG.trim() !== "") {{
-                provSelect.value = "groq";
-            }}
-            actualizarProveedor();
-        }});
-
-        // Lógica del Chat IA
-        function toggleChat() {{
-            const box = document.getElementById("ai-chat-box");
-            box.style.display = (box.style.display === "flex") ? "none" : "flex";
-        }}
-
-        function actualizarProveedor() {{
-            const prov = document.getElementById("providerSelect").value;
-            const keyInput = document.getElementById("apiKeyInput");
-
-            // Si eligen Groq y NO tenemos clave cargada desde el YAML, mostramos la casilla
-            if (prov === "groq" && (!GROQ_KEY_CONFIG || GROQ_KEY_CONFIG.trim() === "")) {{
-                keyInput.style.display = "block";
-            }} else {{
-                keyInput.style.display = "none";
-            }}
-        }}
-
-        function handleKeyPress(e) {{
-            if (e.key === "Enter") enviarMensaje();
-        }}
-
-        async function enviarMensaje() {{
-            const input = document.getElementById("chatInput");
-            const text = input.value.trim();
-            if (!text) return;
-
-            const msgContainer = document.getElementById("chatMessages");
-
-            // Mensaje del usuario
-            const userDiv = document.createElement("div");
-            userDiv.className = "chat-msg user";
-            userDiv.innerText = text;
-            msgContainer.appendChild(userDiv);
-            input.value = "";
-            msgContainer.scrollTop = msgContainer.scrollHeight;
-
-            // Placeholder de respuesta
-            const astDiv = document.createElement("div");
-            astDiv.className = "chat-msg assistant";
-            astDiv.innerText = "Pensando...";
-            msgContainer.appendChild(astDiv);
-            msgContainer.scrollTop = msgContainer.scrollHeight;
-
-            const provider = document.getElementById("providerSelect").value;
-            const manualKey = document.getElementById("apiKeyInput").value.trim();
-            const apiKey = GROQ_KEY_CONFIG || manualKey;
-
-            const systemPrompt = `Eres el asistente de ciberseguridad de ArgosMind.
-            REGLAS STRICTAS Y BARRERAS DE SEGURIDAD:
-            1. Responde ÚNICAMENTE a preguntas sobre el informe OSINT del objetivo '${target}'.
-            2. Datos de hallazgos disponibles: ${{JSON.stringify(FINDINGS_DATA)}}
-            3. Si el usuario pregunta algo no relacionado con este informe, rechaza responder con esta frase exacta: "Esta consulta no está relacionada con el informe OSINT analizado."`;
-
-            try {{
-                if (provider === "ollama") {{
-                    const res = await fetch("http://localhost:11434/api/generate", {{
-                        method: "POST",
-                        headers: {{ "Content-Type": "application/json" }},
-                        body: JSON.stringify({{
-                            model: "llama3.1",
-                            prompt: `${{systemPrompt}}\n\nPregunta: ${{text}}`,
-                            stream: false
-                        }})
-                    }});
-                    const data = await res.json();
-                    astDiv.innerText = data.response || "No se obtuvo respuesta de Ollama.";
-                }} else {{
-                    if (!apiKey) {{
-                        astDiv.innerText = "No se ha encontrado ninguna API Key de Groq en config.yaml ni introducida manualmente.";
-                        return;
-                    }}
-                    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {{
-                        method: "POST",
-                        mode: "cors",
-                        headers: {{
-                            "Content-Type": "application/json",
-                            "Authorization": `Bearer ${{apiKey}}`
-                        }},
-                        body: JSON.stringify({{
-                            model: "llama-3.3-70b-versatile",
-                            messages: [
-                                {{ role: "system", content: systemPrompt }},
-                                {{ role: "user", content: text }}
-                            ]
-                        }})
-                    }});
-                    const data = await res.json();
-                    if (data.choices && data.choices[0]) {{
-                        astDiv.innerText = data.choices[0].message.content;
-                    }} else {{
-                        astDiv.innerText = "Error en respuesta de Groq: " + (data.error?.message || "Consulta rechazada.");
-                    }}
-                }}
-            }} catch (err) {{
-                astDiv.innerText = "Error de conexión al procesar la solicitud: " + err.message;
-            }}
-
-            msgContainer.scrollTop = msgContainer.scrollHeight;
-        }}
+            });
+        }
     </script>
 </body>
 </html>

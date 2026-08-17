@@ -25,7 +25,8 @@ class ModulesConfig(BaseModel):
 # Configuración de AI
 class AiConfig(BaseModel):
     enabled: bool = True
-    model: str = "llama-3.1-70b-versatile"
+    provider: str = "groq"   
+    model: str = "llama-3.3-70b-versatile"
 
 # Configuración de salida
 class OutputConfig(BaseModel):
