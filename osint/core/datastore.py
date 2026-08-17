@@ -1,6 +1,7 @@
 from collections import defaultdict
 from typing import Iterator
 
+
 # Tipos de severidad de hallazgos
 class Severity:
     HIGH = "high"
@@ -99,3 +100,20 @@ class DataStore:
     # Obtener número de hallazgos
     def __len__(self) -> int:
         return len(self._findings)
+
+    # Método para reconstruir un DataStore a partir de un diccionario
+    @classmethod
+    def from_dict(cls, data: dict) -> "DataStore":
+        """Reconstruye un DataStore a partir del diccionario de un reporte JSON."""
+        ds = cls()
+        for f_data in data.get("findings", []):
+            finding = Finding(
+                module=f_data.get("module", "unknown"),
+                type=f_data.get("type", "unknown"),
+                value=f_data.get("value", ""),
+                severity=f_data.get("severity", Severity.INFO),
+                source=f_data.get("source"),
+                metadata=f_data.get("metadata", {}),
+            )
+            ds.add(finding)
+        return ds
