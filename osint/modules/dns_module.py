@@ -69,7 +69,13 @@ class DnsModule(BaseModule):
             resultado = await resolver.query(dominio, rtype)
 
             for registro in resultado:
-                valor = str(registro)
+                if hasattr(registro, "host"):
+                    valor = registro.host
+                elif hasattr(registro, "text"):
+                    valor = registro.text
+                else:
+                    valor = str(registro)
+
                 severidad = self._clasificar_severidad(rtype, valor)
 
                 self.add_finding(
@@ -84,7 +90,6 @@ class DnsModule(BaseModule):
                 )
 
         except aiodns.error.DNSError:
-            # El registro no existe para este dominio, es completamente normal
             pass
 
     def _clasificar_severidad(self, rtype: str, valor: str) -> str:

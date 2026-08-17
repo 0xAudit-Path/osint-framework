@@ -4,6 +4,7 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+
 # Configuración de la red
 class NetworkConfig(BaseModel):
     timeout: int = 10
@@ -21,10 +22,15 @@ class DnsConfig(BaseModel):
 class ModulesConfig(BaseModel):
     dns: DnsConfig = Field(default_factory=DnsConfig)
 
+# Configuración de AI
+class AiConfig(BaseModel):
+    enabled: bool = True
+    model: str = "llama-3.1-70b-versatile"
+
 # Configuración de salida
 class OutputConfig(BaseModel):
     directory: Path = Path("./reports")
-    formats: list[str] = ["json", "html"]
+    formats: list[str] = ["json", "html", "csv"] # Formatos de salida permitidos por defecto
 
     @field_validator("formats")
     @classmethod
@@ -41,6 +47,7 @@ class Config(BaseModel):
     network: NetworkConfig = Field(default_factory=NetworkConfig)
     modules: ModulesConfig = Field(default_factory=ModulesConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    ai: AiConfig = Field(default_factory=AiConfig)
 
     @classmethod
     # Cargar configuración desde YAML
