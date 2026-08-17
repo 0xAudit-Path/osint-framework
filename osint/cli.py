@@ -218,15 +218,7 @@ async def _iniciar_chat(cfg, datastore, target, insights):
     help="Ruta al fichero de configuración.",
 )
 def check_config(config: Path):
-    """
-    Verifica que config.yaml existe y muestra el estado de las API keys.
-
-    Ejemplo:
-
-    \b
-      osint check-config
-      osint check-config --config mi_config.yaml
-    """
+    """Verifica que config.yaml existe y muestra el estado de la configuración."""
     from osint.core.config import Config
 
     try:
@@ -257,38 +249,15 @@ def check_config(config: Path):
         else:
             console.print(f"  [yellow]—[/yellow] {descripcion} [dim](no configurada)[/dim]")
 
-    # Módulos disponibles
-    console.print("\n[bold]Módulos disponibles:[/bold]")
-    from osint.modules.dns_module import DnsModule
-    from osint.modules.leaks_module import LeaksModule
-    from osint.modules.shodan_module import ShodanModule
-    from osint.modules.socials_module import SocialsModule
-    from osint.modules.tls_module import TlsModule
-    from osint.modules.whois_module import WhoisModule
-
-    modulos = [
-        DnsModule(cfg), TlsModule(cfg), WhoisModule(cfg),
-        ShodanModule(cfg), LeaksModule(cfg), SocialsModule(cfg),
-    ]
-    for modulo in modulos:
-        if modulo.is_available():
-            console.print(f"  [green]✓[/green] {modulo.name} — {modulo.description}")
-        else:
-            console.print(
-                f"  [yellow]—[/yellow] {modulo.name} "
-                f"[dim](requiere key: {modulo.requires_api_key()})[/dim]"
-            )
-
-    # Estado de la IA
+    # Estado de la IA corregido
     console.print("\n[bold]Inteligencia Artificial:[/bold]")
-    groq_key = cfg.get_api_key("groq")
-    if groq_key:
-        console.print("  [green]✓[/green] Groq configurado")
-    else:
-        console.print("  [yellow]—[/yellow] Sin proveedor de IA configurado")
+    ai_cfg = getattr(cfg, "ai", {})
+    provider_name = getattr(ai_cfg, "provider", ai_cfg.get("provider", "desconocido") if isinstance(ai_cfg, dict) else "desconocido")
+    model_name = getattr(ai_cfg, "model", ai_cfg.get("model", "desconocido") if isinstance(ai_cfg, dict) else "desconocido")
 
+    console.print(f"  [cyan]•[/cyan] Proveedor activo: [bold]{provider_name}[/bold]")
+    console.print(f"  [cyan]•[/cyan] Modelo activo: [bold]{model_name}[/bold]")
     console.print()
-
 
 @main.command()
 @click.argument("target")
@@ -296,28 +265,37 @@ def check_config(config: Path):
     "--config", "-c",
     default="config.yaml",
     type=Path,
+    help="Ruta al fichero de configuración.",
+)
+@click.option(
+    "--report", "-r",
+    type=Path,
+    default=None,
+    help="Ruta al fichero de informe previo JSON para cargar contexto.",
 )
 def chat(
     target: str,
-    config: Path = Path("config.yaml"),
-    report: Path | None = None,
-    ):
-        """
-        Abre el modo chat interactivo sobre los hallazgos de un escaneo previo.
+    config: Path,
+    report: Path | None,
+):
+    """
+    Abre el modo chat interactivo sobre los hallazgos de un escaneo previo.
 
-        Ejemplos:
+    Ejemplos:
 
-        \b
-        osint chat ejemplo.com
-        osint chat ejemplo.com -r ./reports/ejemplo.com_report.json
-        """
-        asyncio.run(_ejecutar_chat_standalone(target, config, report))
-
-
+    \b
+      osint chat ejemplo.com
+      osint chat ejemplo.com -r ./reports/ejemplo.com_report.json
+    """
+    asyncio.run(_ejecutar_chat_standalone(target, config, report))
 
 
-async def _ejecutar_chat_standalone(target: str, config_path: Path("config.yaml"), report_path: Path | None):
-    """Chat standalone sin escaneo previo — usa un DataStore vacío."""
+async def _ejecutar_chat_standalone(
+    target: str,
+    config_path: Path = Path("config.yaml"),
+    report_path: Path | None = None,
+):
+    """Chat standalone sin escaneo previo — carga datos de informe JSON si existe."""
     import json
 
     from osint.ai.analyst import AIInsight
@@ -334,11 +312,11 @@ async def _ejecutar_chat_standalone(target: str, config_path: Path("config.yaml"
 
     try:
         provider = build_provider(cfg)
-    except ValueError as e:
+    except Exception as e:
         console.print(f"[red]Error configurando IA: {e}[/red]")
         return
 
-    # Si el usuario no pasa una ruta explícita, se busca la ruta por defecto en la carpeta de reportes
+    # Si el usuario no pasa una ruta explícita, se busca en la carpeta de reportes por defecto
     if not report_path:
         safe_target = target.replace("/", "_").replace(":", "_")
         report_path = cfg.output.directory / f"{safe_target}_report.json"
@@ -346,15 +324,13 @@ async def _ejecutar_chat_standalone(target: str, config_path: Path("config.yaml"
     datastore = DataStore()
     insights = []
 
-    # Cargam el archivo de reporte si existe
-    if report_path.exists():
+    if report_path and report_path.exists():
         try:
             with open(report_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
             datastore = DataStore.from_dict(data)
 
-            # Reconstruye los objetos AIInsight cargados del JSON
             for i_data in data.get("insights", []):
                 insights.append(
                     AIInsight(
@@ -385,7 +361,3 @@ async def _ejecutar_chat_standalone(target: str, config_path: Path("config.yaml"
         insights=insights,
     )
     await chat_session.iniciar()
-
-
-if __name__ == "__main__":
-    main()
