@@ -1,9 +1,11 @@
 import json
+import aiohttp
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Optional
 
-import aiohttp
+if TYPE_CHECKING: from osint.core.config import Config
 
 
 @dataclass
@@ -73,6 +75,62 @@ class BaseProvider(ABC):
         """
         ...
 
+class OllamaProvider(BaseProvider):
+    """
+    Proveedor local de IA usando Ollama (Privacy-by-Design).
+    No requiere API Key y funciona 100% offline.
+    """
+    BASE_URL = "http://localhost:11434/api"
+
+    def __init__(self, model: str = "llama3.1"):
+        self.model = model
+
+    async def complete(
+        self,
+        messages: list[dict],
+        temperature: float = 0.3,
+        max_tokens: int = 1000,
+    ) -> LLMResponse:
+        # Convertimos el formato de mensajes al prompt plano de Ollama /generate
+        system_prompt = next((m["content"] for m in messages if m["role"] == "system"), "")
+        user_prompt = next((m["content"] for m in messages if m["role"] == "user"), "")
+        prompt_completo = f"{system_prompt}\n\nPregunta: {user_prompt}" if system_prompt else user_prompt
+
+        payload = {
+            "model": self.model,
+            "prompt": prompt_completo,
+            "stream": False,
+            "options": {"temperature": temperature}
+        }
+
+        timeout = aiohttp.ClientTimeout(total=90)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(f"{self.BASE_URL}/generate", json=payload) as r:
+                    r.raise_for_status()
+                    data = await r.json()
+
+            return LLMResponse(
+                content=data.get("response", ""),
+                model=self.model,
+                prompt_tokens=data.get("prompt_eval_count", 0),
+                completion_tokens=data.get("eval_count", 0),
+            )
+        except Exception as e:
+            raise RuntimeError(f"Error conectando con Ollama local: {e}")
+
+    async def stream(self, messages: list[dict], temperature: float = 0.3, max_tokens: int = 1000) -> AsyncIterator[LLMStreamChunk]:
+        # Implementación ligera de stream para la CLI
+        res = await self.complete(messages, temperature, max_tokens)
+        yield LLMStreamChunk(delta=res.content, finished=True)
+
+    async def health_check(self) -> bool:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.BASE_URL}/tags") as r:
+                    return r.status == 200
+        except Exception:
+            return False
 
 class GroqProvider(BaseProvider):
     """
@@ -95,7 +153,7 @@ class GroqProvider(BaseProvider):
 
     BASE_URL = "https://api.groq.com/openai/v1"
 
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, api_key: str, model: str = "llama3-8b-8192"):
         self.api_key = api_key
         self.model   = model
         self._headers = {
@@ -129,7 +187,12 @@ class GroqProvider(BaseProvider):
                     headers=self._headers,
                     json=payload,
                 ) as r:
-                    r.raise_for_status()
+                    # Imprimir error detallado si la respuesta no es HTTP 200
+                    if r.status != 200:
+                        error_body = await r.text()
+                        raise RuntimeError(
+                            f"Groq HTTP {r.status} — Key usada: '{self.api_key[:6]}...' — Respuesta API: {error_body}"  # noqa: E501
+                        )
                     data = await r.json()
 
             return LLMResponse(
@@ -143,7 +206,7 @@ class GroqProvider(BaseProvider):
             raise RuntimeError(f"Error de Groq API ({e.status}): {e.message}")
         except Exception as e:
             raise RuntimeError(f"Error conectando con Groq: {e}")
-
+        
     async def stream(
         self,
         messages: list[dict],
@@ -231,28 +294,29 @@ def build_provider(config: "Config") -> BaseProvider:  # type: ignore[name-defin
     """
     Factory que construye el proveedor correcto según config.yaml.
 
-    El resto del código solo trabaja con BaseProvider, nunca
-    con GroqProvider directamente. Esto hace que añadir Ollama
-    en el futuro sea crear la clase y añadir un elif aquí.
     """
+    raw_ai = getattr(config, "ai", None)
+    print(f"\n[DEBUG AI] Objeto config.ai recibido: {raw_ai} (Tipo: {type(raw_ai)})")
+    proveedor = "groq"
+    modelo = "llama-3.3-70b-versatile"
+
     ai_config = getattr(config, "ai", {})
     if isinstance(ai_config, dict):
-        proveedor = ai_config.get("provider", "groq").lower()
-        modelo    = ai_config.get("model", "llama-3.3-70b-versatile")
+        proveedor = ai_config.get("provider", "ollama").lower()
+        modelo    = ai_config.get("model", "llama-3.1-8b-instant")
     else:
-        proveedor = getattr(ai_config, "provider", "groq").lower()
-        modelo    = getattr(ai_config, "model", "llama-3.3-70b-versatile")
+        proveedor = getattr(ai_config, "provider", "ollama").lower()
+        modelo    = getattr(ai_config, "model", "llama-3.1-8b-instant")
+
+    print(f"[DEBUG AI] Proveedor resuelto: '{proveedor}' | Modelo: '{modelo}'\n")
+
+    if proveedor == "ollama":
+        return OllamaProvider(model=modelo)
 
     if proveedor == "groq":
         key = config.get_api_key("groq")
         if not key:
-            raise ValueError(
-                "Falta la key de Groq en config.yaml (apis.groq). "
-                "Obtén una gratuita en https://console.groq.com"
-            )
+            raise ValueError("Falta la key de Groq en config.yaml (apis.groq).")
         return GroqProvider(api_key=key, model=modelo)
 
-    raise ValueError(
-        f"Proveedor '{proveedor}' no soportado. "
-        f"Valores válidos: groq"
-    )
+    raise ValueError(f"Proveedor '{proveedor}' no soportado.")
