@@ -1,572 +1,712 @@
 # osint-framework
 
-Herramienta automatizada de reconocimiento OSINT, modular y de código abierto, escrita en Python.
+Framework modular de reconocimiento OSINT escrito en Python. El proyecto automatiza la recopilación pasiva de información pública sobre un objetivo, consolida los hallazgos en un almacén común, los deduplica y, si hay configuración de IA, genera análisis de mayor nivel y un chat interactivo sobre los resultados.
 
-**El objetivo es automatizar el ciclo completo de reconocimiento pasivo desde fuentes públicas y generar un informe que cualquier analista pueda leer y reproducir.**
+El alcance es deliberadamente pasivo: consulta DNS, logs de transparencia de certificados, WHOIS, fuentes de exposición de infraestructura, filtraciones y presencia pública en repositorios y redes sociales. No explota vulnerabilidades ni interactúa con el objetivo de forma activa.
 
----
+## Aviso de uso
 
-## Aviso legal
+Usa esta herramienta solo sobre objetivos propios o con autorización explícita. El proyecto está pensado para auditorías, investigación defensiva, laboratorios y ejercicios de aprendizaje.
 
-Esta herramienta realiza únicamente reconocimiento **pasivo**. No accede a ningún sistema sin autorización, no explota vulnerabilidades y no realiza ataques de ningún tipo. Aun así, úsala **solo en**:
+## Qué hace
 
-- Dominios e infraestructura bajo tu control
-- Auditorías con consentimiento explícito y por escrito
-- Entornos de laboratorio y plataformas CTF (HackTheBox, TryHackMe)
-- Dominios de prueba públicos (`scanme.nmap.org`, `example.com`)
+El flujo general es este:
 
-El uso de esta herramienta sobre sistemas sin autorización puede ser constitutivo de delito en virtud del artículo 197 bis del Código Penal español y legislación equivalente en otras jurisdicciones.
-
----
-
-## Tabla de contenidos
-
-1. [Quickstart](#quickstart)
-2. [¿Qué es OSINT?](#qué-es-osint)
-   - [El ciclo de inteligencia](#el-ciclo-de-inteligencia)
-   - [Reconocimiento pasivo vs activo](#reconocimiento-pasivo-vs-activo)
-   - [Fuentes de información pública](#fuentes-de-información-pública)
-3. [Arquitectura del proyecto](#arquitectura-del-proyecto)
-   - [Estructura de ficheros](#estructura-de-ficheros)
-   - [Flujo de ejecución](#flujo-de-ejecución)
-   - [El DataStore](#el-datastore)
-4. [Módulos de recopilación](#módulos-de-recopilación)
-   - [DNS](#dns)
-   - [TLS / Certificados](#tls--certificados)
-   - [WHOIS y ASN](#whois-y-asn)
-   - [Shodan](#shodan)
-5. [Capa de inteligencia artificial](#capa-de-inteligencia-artificial)
-6. [Instalación](#instalación)
-7. [Configuración](#configuración)
-8. [Uso](#uso)
-9. [Tests](#tests)
-10. [Comparativa con herramientas existentes](#comparativa-con-herramientas-existentes)
-11. [Recursos para aprender más](#recursos-para-aprender-más)
-
----
-
-## Quickstart
-
-```bash
-# Clonar e instalar
-git clone https://github.com/0xAudit-Path/osint-framework.git
-cd osint-framework
-poetry install
-
-# Configurar API keys (solo las gratuitas son necesarias)
-cp config.example.yaml config.yaml
-
-# Configurar la IA local (opcional pero recomendado)
-poetry run osint ai-setup
-
-# Escaneo completo
-poetry run osint scan ejemplo.com
-
-# Escaneo con módulos específicos
-poetry run osint scan ejemplo.com -m dns -m tls
-
-# Escaneo con formato de salida concreto
-poetry run osint scan ejemplo.com -f json -f html
-
-# Chat interactivo sobre los resultados
-poetry run osint chat ejemplo.com --results reports/ejemplo.com.json
-
-# Verificar configuración y API keys
-poetry run osint check-config
+```mermaid
+flowchart TD
+    A[CLI: osint scan/chat/check-config] --> B[Carga config.yaml]
+    B --> C[Orchestrator]
+    C --> D[Modules pasivos]
+    D --> E[DataStore]
+    E --> F[AIAnalyst con Groq]
+    F --> G[InteractiveChat]
+    E --> H[Salida en consola y datos internos]
 ```
 
----
+El proyecto está organizado en capas:
 
-## ¿Qué es OSINT?
+1. **Capa de configuración**: lee el YAML, valida el esquema básico y expone las API keys.
+2. **Capa de ejecución**: el orquestador registra módulos y los ejecuta en paralelo con `asyncio`.
+3. **Capa de recolección**: cada módulo consulta una fuente pública concreta y produce `Finding`.
+4. **Capa de consolidación**: `DataStore` normaliza, deduplica y resume los hallazgos.
+5. **Capa de IA**: Groq genera resúmenes, correlaciones, dorks y score de riesgo.
+6. **Capa interactiva**: el chat permite explorar los resultados en lenguaje natural.
 
-OSINT (*Open Source Intelligence*) es la disciplina de recopilar y analizar información de fuentes de acceso público para obtener inteligencia útil sobre un objetivo. No implica acceso no autorizado a ningún sistema: toda la información ya está disponible en Internet, la diferencia está en saber dónde buscar y cómo correlacionarla.
+## Qué problema resuelve
 
-En ciberseguridad, OSINT es la primera fase de cualquier auditoría o test de penetración. Antes de interactuar con los sistemas objetivo, un analista dedica horas a recopilar información pasiva que después guía el resto del proceso.
+En OSINT real, el problema no suele ser encontrar una fuente aislada, sino combinar muchas señales pequeñas. Este proyecto intenta resolver precisamente eso:
 
-### El ciclo de inteligencia
+- centraliza la recopilación en un único punto de entrada
+- ejecuta módulos en paralelo para reducir tiempo de espera
+- clasifica resultados por severidad
+- elimina duplicados entre módulos
+- añade una capa de análisis cruzado con IA
+- ofrece una conversación interactiva sobre el escaneo ya realizado
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  1. PLANIFICACIÓN                                           │
-│  ¿Qué queremos saber? ¿Sobre qué objetivo?                  │
-├─────────────────────────────────────────────────────────────┤
-│  2. RECOPILACIÓN  ← esta herramienta automatiza esta fase   │
-│  DNS · TLS · Shodan · WHOIS · Filtraciones · RRSS           │
-├─────────────────────────────────────────────────────────────┤
-│  3. PROCESADO                                               │
-│  Normalización, deduplicación y clasificación por severidad │
-├─────────────────────────────────────────────────────────────┤
-│  4. ANÁLISIS  ← la capa de IA automatiza esta fase          │
-│  Correlaciones, risk score, resumen ejecutivo               │
-├─────────────────────────────────────────────────────────────┤
-│  5. DISEMINACIÓN                                            │
-│  Informe en PDF, HTML, JSON y CSV                           │
-└─────────────────────────────────────────────────────────────┘
-```
+## Dependencias
 
-### Reconocimiento pasivo vs activo
+Las dependencias runtime declaradas en `pyproject.toml` son:
 
-| Característica | Pasivo (esta herramienta) | Activo |
-|---|---|---|
-| Interacción con el objetivo | Ninguna directa | Directa (ping, escaneo de puertos...) |
-| Detectable por el objetivo | No | Sí (aparece en logs) |
-| Fuentes | Bases de datos públicas, APIs | El propio sistema objetivo |
-| Legalidad sin autorización | Legal | Ilegal en la mayoría de jurisdicciones |
-| Ejemplos | crt.sh, Shodan, WHOIS | nmap, nikto, dirbuster |
+- `click`: interfaz de línea de comandos
+- `rich`: salida con formato, paneles, progreso y markdown
+- `structlog`: logs estructurados
+- `pydantic`: modelos de configuración y validación
+- `pyyaml`: lectura de `config.yaml`
+- `aiohttp`: peticiones HTTP asíncronas y streaming SSE
+- `aiodns`: consultas DNS asíncronas
+- `dnspython`: utilidades DNS adicionales y AXFR
+- `cryptography`: análisis de certificados X.509
+- `python-whois`: WHOIS de dominios
+- `ipwhois`: WHOIS de IPs y ASN
+- `tweepy`: acceso a Twitter/X cuando hay token
 
-### Fuentes de información pública
+Las dependencias de desarrollo son:
 
-Cada fuente revela una capa distinta de la infraestructura del objetivo:
+- `pytest`
+- `pytest-asyncio`
+- `pytest-cov`
+- `ruff`
+- `mypy`
 
-```
-DOMINIO objetivo.com
-        │
-        ├── DNS ──────────────── Subdominios, IPs, servidores de correo
-        │                        Transferencias de zona mal configuradas
-        │
-        ├── TLS / CT Logs ─────── Subdominios históricos (crt.sh)
-        │                        Certificados expirados o débiles
-        │
-        ├── WHOIS / ASN ────────── Registrante, fechas, proveedor de red
-        │                        Bloque CIDR, organización propietaria
-        │
-        ├── Shodan / Censys ────── Puertos abiertos, banners, CVEs
-        │                        Paneles de administración expuestos
-        │
-        ├── Filtraciones ───────── Credenciales comprometidas (HIBP)
-        │                        Correos corporativos en brechas
-        │
-        └── RRSS / GitHub ──────── Empleados, tecnologías, secretos
-                                  en repositorios públicos
-```
+Requisitos base:
 
----
+- Python 3.11 o superior
+- Poetry
 
-## Arquitectura del proyecto
+## Estructura del proyecto
 
-### Estructura de ficheros
+### Raíz del repositorio
 
-```
-osint-framework/
-├── pyproject.toml              → dependencias y comando CLI
-├── config.example.yaml         → plantilla de configuración
-├── osint/
-│   ├── cli.py                  → comandos de terminal (Click)
-│   ├── core/
-│   │   ├── config.py           → carga y validación de config.yaml (Pydantic)
-│   │   ├── datastore.py        → almacén central de hallazgos
-│   │   ├── orchestrator.py     → ejecución paralela de módulos (asyncio)
-│   │   └── rate_limiter.py     → control de velocidad y rotación de UA
-│   ├── modules/
-│   │   ├── dns_module.py       → registros DNS, zona transfer, bruteforce
-│   │   ├── tls_module.py       → CT Logs (crt.sh) y análisis de certificado
-│   │   ├── whois_module.py     → WHOIS de dominio e IPs (ASN, CIDR)
-│   │   ├── shodan_module.py    → puertos, banners, CVEs (Shodan + Censys)
-│   │   ├── leaks_module.py     → credenciales filtradas (HIBP)
-│   │   └── socials_module.py   → GitHub, Twitter/X, LinkedIn
-│   ├── ai/
-│   │   ├── providers.py        → Ollama (local) y Groq (cloud) con interfaz común
-│   │   ├── analyst.py          → análisis post-scan: resumen, correlaciones, dorks
-│   │   ├── chat.py             → modo conversacional interactivo con streaming
-│   │   └── setup.py            → instalación asistida de Ollama
-│   └── reports/
-│       ├── engine.py           → generación de informes (PDF, HTML, JSON, CSV)
-│       └── templates/          → plantillas Jinja2
-└── tests/
-    ├── test_dns_module.py
-    ├── test_tls_module.py
-    └── test_whois_module.py
-```
-
-### Flujo de ejecución
-
-```
-Usuario: osint scan ejemplo.com
-              │
-              ▼
-          cli.py
-          Valida argumentos y carga config.yaml
-              │
-              ▼
-       Orchestrator
-       Registra módulos disponibles según config y API keys
-              │
-              ▼
-    ┌─────────────────────────────────────────────────┐
-    │  asyncio.gather() — ejecución paralela          │
-    │                                                 │
-    │  DnsModule    TlsModule    WhoisModule  ...     │
-    │      │            │            │                │
-    │      └────────────┴────────────┘                │
-    │                   │                             │
-    │               findings[]                        │
-    └───────────────────┼─────────────────────────────┘
-                        │
-                        ▼
-                    DataStore
-              Normaliza y deduplica
-                        │
-                        ▼
-                   AI Analyst  (opcional)
-              Resumen · Correlaciones · Risk score
-                        │
-                        ▼
-                  ReportEngine
-              PDF · HTML · JSON · CSV
-                        │
-                        ▼
-                  Chat interactivo  (opcional)
-              Preguntas en lenguaje natural sobre los resultados
-```
-
-### El DataStore
-
-El `DataStore` es el objeto central que recorre todo el pipeline. Cada módulo produce una lista de `Finding` que se añade al DataStore al terminar. Un `Finding` tiene la siguiente estructura:
-
-```python
-Finding(
-    module   = "dns",           # qué módulo lo encontró
-    type     = "subdomain",     # tipo de hallazgo
-    value    = "dev.ejemplo.com", # el dato en sí
-    severity = "low",           # info | low | medium | high
-    source   = "dns/bruteforce",# fuente concreta
-    metadata = {"ips": ["1.2.3.4"]}  # datos adicionales
-)
-```
-
-El DataStore deduplica automáticamente: si dos módulos distintos descubren el mismo subdominio, solo se registra una vez.
-
-**Niveles de severidad:**
-
-| Nivel | Ejemplos |
+| Archivo | Qué hace |
 |---|---|
-| `HIGH` | CVE con CVSS ≥ 7, certificado expirado, transferencia de zona permitida, RDP/MongoDB expuesto |
-| `MEDIUM` | Certificado autofirmado, dominio próximo a expirar, SMTP expuesto |
-| `LOW` | Subdominio descubierto, SSH expuesto, política SPF revisable |
-| `INFO` | Registros DNS estándar, información WHOIS, geolocalización |
+| `pyproject.toml` | Define dependencias, scripts de Poetry, versión de Python y configuración de Ruff. |
+| `config.example.yaml` | Plantilla de configuración para crear `config.yaml`. |
+| `config.yaml` | Configuración local real usada por el proyecto. |
+| `README.md` | Documentación principal del proyecto. |
+| `LICENSE` | Licencia del proyecto. |
+| `probar_groq.py` | Script manual para comprobar el proveedor Groq y el streaming. |
+| `probar_analyst.py` | Script manual para probar `AIAnalyst` con un `DataStore` de ejemplo. |
+| `probar_chat.py` | Script manual para probar el chat interactivo con datos sintéticos. |
 
----
+### Paquete `osint`
 
-## Módulos de recopilación
+| Archivo | Qué hace |
+|---|---|
+| `osint/__init__.py` | Marcador de paquete. |
+| `osint/cli.py` | Entrada principal del CLI con `scan`, `chat` y `check-config`. |
+
+### `osint/core`
+
+| Archivo | Qué hace |
+|---|---|
+| `osint/core/__init__.py` | Marcador de paquete. |
+| `osint/core/config.py` | Modelos Pydantic para cargar y validar el YAML. |
+| `osint/core/datastore.py` | Define `Finding`, `Severity` y `DataStore`. |
+| `osint/core/orchestrator.py` | Define `BaseModule` y ejecuta los módulos en paralelo. |
+| `osint/core/rate_limiter.py` | Utilidad de rate limiting y selección de user-agents. |
+
+### `osint/modules`
+
+| Archivo | Qué hace |
+|---|---|
+| `osint/modules/__init__.py` | Marcador de paquete. |
+| `osint/modules/dns_module.py` | Enumeración DNS, AXFR y fuerza bruta opcional de subdominios. |
+| `osint/modules/tls_module.py` | CT logs de `crt.sh` y análisis del certificado TLS activo. |
+| `osint/modules/whois_module.py` | WHOIS de dominio e IP, ASN y proveedor de red. |
+| `osint/modules/shodan_module.py` | Infraestructura expuesta, puertos, banners, CVEs y paneles. |
+| `osint/modules/leaks_module.py` | Filtraciones de credenciales con HIBP o breach.directory. |
+| `osint/modules/socials_module.py` | Reconocimiento de GitHub, Twitter/X y LinkedIn. |
+
+### `osint/ai`
+
+| Archivo | Qué hace |
+|---|---|
+| `osint/ai/__init__.py` | Marcador de paquete. |
+| `osint/ai/providers.py` | Interfaz de proveedores de LLM y proveedor Groq. |
+| `osint/ai/analyst.py` | Genera resúmenes, correlaciones, dorks y risk score. |
+| `osint/ai/chat.py` | Chat interactivo post-scan con streaming y comandos especiales. |
+
+### Tests
+
+| Archivo | Qué hace |
+|---|---|
+| `tests/__init__.py` | Marcador de paquete. |
+| `tests/test_dns_module.py` | Tests del módulo DNS. |
+| `tests/test_tls_module.py` | Tests del módulo TLS. |
+| `tests/test_whois_module.py` | Tests del módulo WHOIS. |
+| `tests/test_shodan_module.py` | Tests del módulo Shodan. |
+| `tests/test_leaks_module.py` | Tests del módulo de filtraciones. |
+| `tests/test_socials_module.py` | Tests del módulo de redes sociales. |
+
+## Módulos y fuentes de datos
 
 ### DNS
 
-Realiza tres tipos de consultas de forma paralela usando `aiodns` (asíncrono):
+El módulo DNS usa `aiodns` y `dnspython` para:
 
-**1. Resolución de registros estándar**
+- resolver registros `A`, `AAAA`, `MX`, `NS`, `TXT`, `CNAME` y `SOA`
+- detectar política de correo en `TXT` cuando aparece SPF o DMARC
+- intentar transferencia de zona `AXFR`
+- buscar subdominios por fuerza bruta si se activa `modules.dns.bruteforce`
 
-Consulta todos los tipos relevantes: `A`, `AAAA`, `MX`, `NS`, `TXT`, `CNAME`, `SOA`. Los lanza todos a la vez con `asyncio.gather()`, por lo que el tiempo total es el del registro más lento, no la suma de todos.
+Los resultados suelen producir hallazgos informativos, pero una transferencia de zona exitosa se marca como alta severidad.
 
-**2. Transferencia de zona (AXFR)**
+### TLS
 
-```
-Servidor bien configurado:
-  cliente → AXFR → servidor → REFUSED ✓
+El módulo TLS combina dos fuentes:
 
-Servidor mal configurado:
-  cliente → AXFR → servidor → [todos los registros DNS] ← HIGH
-```
+- `crt.sh` para Certificate Transparency Logs
+- conexión TLS directa al host para analizar el certificado activo
 
-Si el servidor lo permite, devuelve toda la infraestructura DNS de golpe. Es una misconfiguration grave que marca todos los registros obtenidos como `HIGH`.
+Extrae subdominios, fechas de expiración, SANs, algoritmos débiles, claves RSA cortas y certificados autofirmados.
 
-**3. Fuerza bruta de subdominios**
+### WHOIS
 
-Prueba palabras de un diccionario (configurable) construyendo FQDNs y comprobando si resuelven. Se lanza en grupos de 50 peticiones simultáneas para controlar la carga.
+El módulo WHOIS usa `python-whois` para dominios y `ipwhois` para IPs. Obtiene:
 
-### TLS / Certificados
-
-Dos fuentes complementarias en paralelo:
-
-**crt.sh (CT Logs)**
-
-Los Certificate Transparency Logs son registros públicos donde las autoridades certificadoras deben publicar cada certificado que emiten. crt.sh los indexa todos. Buscando `%.ejemplo.com` obtenemos todos los subdominios para los que se ha emitido algún certificado, incluyendo históricos que ya no están en DNS.
-
-```
-crt.sh query: %.ejemplo.com
-     │
-     ├── ejemplo.com          (certificado vigente)
-     ├── www.ejemplo.com      (certificado vigente)
-     ├── dev.ejemplo.com      (certificado expirado hace 8 meses) ← interesante
-     ├── staging.ejemplo.com  (certificado expirado hace 2 años)  ← interesante
-     └── api.ejemplo.com      (certificado vigente)
-```
-
-**Conexión TLS directa**
-
-Se conecta al servidor con `ssl.CERT_NONE` (para analizar también certificados inválidos) y parsea el certificado X.509 con la librería `cryptography`:
-
-- Fechas de validez y días restantes
-- Subject Alternative Names (SANs) → subdominios adicionales
-- Algoritmo de firma (MD5/SHA1 → `HIGH`)
-- Tamaño de clave RSA (< 2048 bits → `HIGH`)
-- Certificado autofirmado (`MEDIUM`)
-
-### WHOIS y ASN
-
-**WHOIS de dominio** (`python-whois`)
-
-Consulta los servidores WHOIS para obtener el registrante, las fechas de creación y expiración, los nameservers y el registrar. Un dominio próximo a expirar es `MEDIUM` porque podría ser comprado por un atacante para ataques de phishing o intercepción de correo.
-
-**WHOIS de IP / ASN** (`ipwhois`)
-
-Para cada IP del dominio consulta los registros regionales de Internet (ARIN, RIPE, LACNIC, APNIC) usando el protocolo RDAP:
-
-```
-IP: 93.184.216.34
-     │
-     └── ASN: AS15133
-         Organización: Edgecast Inc.
-         CIDR: 93.184.216.0/24
-         País: US
-         Proveedor cloud detectado: Cloudflare  ← cruzado con lista de proveedores
-```
+- registrar y fechas del dominio
+- nameservers
+- registrante cuando está disponible
+- ASN, bloque CIDR y organización de la IP
+- detección de proveedor cloud a partir de la descripción del ASN
 
 ### Shodan
 
-Tres fuentes en cascada, de mayor a menor detalle:
+El módulo Shodan está pensado para mapear infraestructura expuesta. Usa una secuencia de fuentes:
 
-| Fuente | Datos | API key | Límite |
-|---|---|---|---|
-| Shodan | Puertos, banners, CVEs, OS, geolocalización | Sí (gratis con email académico) | 100 queries/mes (free) |
-| Censys | Servicios, protocolos, TLS por IP | Opcional | Free tier disponible |
-| ipinfo.io | ASN, organización, país | No | 50.000 req/mes |
+- Shodan, si hay API key
+- Censys Host Lookup como complemento
+- `ipinfo.io` y resolución DNS estándar como apoyo cuando falta información
 
-El módulo clasifica automáticamente los puertos por severidad real, no solo por presencia:
+Clasifica puertos, banners, paneles de administración, cabeceras de seguridad ausentes y CVEs detectados por banners.
 
-```
-Puerto 22  (SSH)       → LOW    (normal, pero revisar versión)
-Puerto 445 (SMB)       → HIGH   (EternalBlue, PrintNightmare)
-Puerto 3306 (MySQL)    → HIGH   (base de datos expuesta a Internet)
-Puerto 6379 (Redis)    → HIGH   (sin autenticación por defecto)
-Puerto 9200 (Elastic)  → HIGH   (sin autenticación por defecto)
-```
+### Filtraciones
 
-También detecta paneles de administración expuestos analizando los títulos HTTP de Shodan (Grafana, Jenkins, phpMyAdmin, Kibana...) y cruza los servicios detectados con la base de datos de CVEs que Shodan ya proporciona.
+El módulo de filtraciones consulta:
 
----
+- HaveIBeenPwned cuando hay API key
+- breach.directory como alternativa gratuita
 
-## Capa de inteligencia artificial
+Registra resumen de brechas, emails comprometidos y detalles de cada breach cuando están disponibles.
 
-Tras el escaneo, el `AIAnalyst` procesa el DataStore completo y genera cuatro productos en paralelo:
+### Socials
 
-**1. Resumen ejecutivo**
+El módulo de redes sociales trabaja con:
 
-Texto de ~250 palabras en lenguaje natural dirigido a un responsable técnico. Destaca los 3 hallazgos más críticos y sugiere prioridades de acción.
+- GitHub API para organizaciones, usuarios y repositorios públicos
+- Twitter/X vía API si existe token, o mediante dorks si no
+- LinkedIn mediante dorks pasivos en Google
 
-**2. Correlaciones entre módulos**
+Busca perfiles públicos, confirma relación con el dominio, detecta repositorios sospechosos y expone tecnologías visibles públicamente.
 
-El análisis más valioso. Detecta relaciones entre hallazgos de distintos módulos que un humano podría pasar por alto:
+## Capa de IA
 
-```
-Ejemplo de correlación detectada:
+La capa de IA está compuesta por tres piezas:
 
-  [dns/bruteforce]  → dev.ejemplo.com resuelve a 1.2.3.4
-  [tls/crt.sh]      → certificado de dev.ejemplo.com expiró hace 8 meses
-  [shodan]          → 1.2.3.4 tiene el puerto 8080 abierto con panel de admin
-  [leaks/hibp]      → 3 credenciales filtradas del dominio ejemplo.com
+- `BaseProvider` define la interfaz común
+- `GroqProvider` implementa la llamada real a la API de Groq
+- `AIAnalyst` genera análisis de más alto nivel sobre el `DataStore`
+- `InteractiveChat` permite conversar con el contexto del scan
 
-  → Correlación: entorno de desarrollo expuesto accidentalmente en producción
-    con credenciales comprometidas. Severidad: ALTA.
-```
+### Qué genera `AIAnalyst`
 
-**3. Google Dorks personalizados**
+- resumen ejecutivo
+- correlaciones entre módulos
+- Google dorks personalizados
+- score de riesgo global
 
-Genera 6 dorks específicos basados en la tecnología detectada en el escaneo. Mucho más efectivos que un diccionario estático porque se adaptan a lo que realmente usa el objetivo.
+### Qué hace el chat
 
-**4. Risk score**
+- mantiene historial de conversación
+- inyecta el contexto del scan y los insights previos
+- soporta streaming token a token
+- ofrece comandos especiales como `/resumen`, `/correlaciones`, `/dorks` y `/riesgo`
 
-Puntuación de 0 a 100 con nivel (CRÍTICO / ALTO / MEDIO / BAJO) y justificación. Aparece en la portada del informe.
+## Data model
 
-**Modo chat interactivo**
+El proyecto gira alrededor de dos objetos:
 
-Tras el escaneo el usuario puede hacer preguntas en lenguaje natural sobre los resultados:
-
-```
-▶ Objetivo: ejemplo.com
-✓ Completado en 34.2s — 187 hallazgos (3 HIGH · 12 MEDIUM · 45 LOW)
-
-   Modo análisis interactivo
-
-> ¿Cuáles son los tres hallazgos más urgentes?
-  1. MySQL expuesto en 93.184.216.34:3306 con credenciales filtradas
-     asociadas al dominio. Riesgo de acceso directo a la base de datos.
-  2. Transferencia de zona permitida en ns2.ejemplo.com — expone toda
-     la infraestructura DNS interna.
-  3. Certificado de dev.ejemplo.com expirado hace 8 meses con panel
-     de administración accesible en el puerto 8080.
-
-> ¿Hay subdominios que parezcan entornos de desarrollo?
-  Sí: dev.ejemplo.com, staging.ejemplo.com y test.ejemplo.com.
-  Los tres tienen certificados expirados y apuntan a IPs distintas
-  a la infraestructura principal.
+```python
+Finding(
+    module="dns",
+    type="subdomain",
+    value="dev.ejemplo.com",
+    severity="low",
+    source="dns/bruteforce",
+    metadata={"ips": ["1.2.3.4"]},
+)
 ```
 
-**Proveedores de IA soportados:**
+`DataStore` deduplica por la clave `module:type:value`, así que dos módulos que descubran el mismo dato no lo duplican en el resumen final. Además permite filtrar por módulo, severidad o tipo, y generar un resumen agregado.
 
-| Proveedor | Modelo | Coste | Requiere |
-|---|---|---|---|
-| Ollama | llama3.1:8b, mistral:7b | Gratis | Instalación local |
-| Groq | llama-3.1-70b-versatile | Gratis | API key (sin tarjeta) |
+## Cómo se ejecuta un scan
 
----
-
-## Instalación
-
-**Requisitos:**
-- Python 3.11+
-- [Poetry](https://python-poetry.org/docs/#installation)
-- [Ollama](https://ollama.com/download) (opcional, para análisis con IA)
-
-```bash
-# 1. Clonar el repositorio
-git clone https://github.com/tu-usuario/osint-framework.git
-cd osint-framework
-
-# 2. Instalar dependencias
-poetry install
-
-# 3. Configurar Ollama (opcional)
-poetry run osint ai-setup
-# Descarga llama3.1:8b (~4.7 GB) y verifica que funciona
-```
-
----
+1. `cli.py` recibe el target y carga `config.yaml`.
+2. `Orchestrator` construye y registra los módulos disponibles.
+3. Cada módulo se ejecuta en paralelo con `asyncio.gather()`.
+4. Los findings retornan al `DataStore`.
+5. Si Groq está configurado, `AIAnalyst` añade insights de nivel superior.
+6. Si no se desactiva, `InteractiveChat` abre una sesión sobre el resultado.
 
 ## Configuración
 
-```bash
-cp config.example.yaml config.yaml
-```
+La plantilla base está en `config.example.yaml`. Los campos que el código usa hoy son estos:
 
 ```yaml
 apis:
-  shodan: ""        # gratis con email académico → https://account.shodan.io
-  hibp: ""          # gratis con cuenta → https://haveibeenpwned.com/API/Key
-  github: ""        # gratis → https://github.com/settings/tokens
-  groq: ""          # gratis → https://console.groq.com (para IA en cloud)
+  groq: "API_KEY_GROQ"
+  shodan: "API_KEY_SHODAN"
+  hibp: "API_KEY_HIBP"
+  github: "API_KEY_GITHUB"
+  twitter: "API_KEY_TWITTER"
+  censys_id: "API_KEY_CENSYS_ID"
+  censys_secret: "API_KEY_CENSYS_SECRET"
 
 network:
-  timeout: 10       # segundos por petición
+  timeout: 10
   retries: 3
+  proxy: null
 
 modules:
   dns:
     enabled: true
-    bruteforce: false         # true para activar fuerza bruta de subdominios
-    wordlist: null            # ruta a tu wordlist, ej: wordlists/top1m.txt
+    bruteforce: false
+    wordlist: null
     resolvers: ["8.8.8.8", "1.1.1.1"]
-  tls:
-    enabled: true
-  whois:
-    enabled: true
-  shodan:
-    enabled: true             # funciona sin key con Censys + ipinfo como fallback
-
-ai:
-  enabled: true
-  provider: "ollama"          # ollama | groq
-  model: "llama3.1:8b"
-  features:
-    executive_summary: true
-    correlations: true
-    dork_generation: true
-    chat: true
 
 output:
   directory: "./reports"
-  formats: ["json", "html", "pdf"]
+  formats: ["json", "html"]
 ```
 
-Las API keys marcadas como gratuitas no requieren tarjeta de crédito. Si no configuras ninguna, los módulos que no las necesitan (DNS, TLS, WHOIS) siguen funcionando con normalidad.
+### Nota importante sobre la configuración de IA
 
----
+El archivo de ejemplo incluye una sección `ai`, pero el modelo `Config` actual solo persiste `apis`, `network`, `modules` y `output`. En la versión actual eso significa que la sección `ai` del YAML no forma parte del objeto validado por `Config` salvo que se amplíe el modelo. El proveedor Groq sigue funcionando porque el código cae en valores por defecto y lee la API key de `apis.groq`.
 
 ## Uso
 
+Instalación y primer arranque:
+
 ```bash
-# Escaneo completo con todos los módulos
+git clone https://github.com/0xAudit-Path/osint-framework.git
+cd osint-framework
+poetry install
+cp config.example.yaml config.yaml
+```
+
+Comandos principales:
+
+```bash
 poetry run osint scan ejemplo.com
-
-# Solo módulos específicos
 poetry run osint scan ejemplo.com -m dns -m tls -m whois
-
-# Elegir formatos de salida
-poetry run osint scan ejemplo.com -f json -f html
-
-# Directorio de salida personalizado
+poetry run osint scan ejemplo.com -f json -f html -f csv
 poetry run osint scan ejemplo.com -o ./mis-informes
-
-# Chat sobre resultados de un scan previo
-poetry run osint chat ejemplo.com --results reports/ejemplo.com_20250524.json
-
-# Configurar Ollama (solo la primera vez)
-poetry run osint ai-setup --model llama3.1:8b
-
-# Verificar API keys configuradas
+poetry run osint chat ejemplo.com
 poetry run osint check-config
 ```
 
----
+### Qué hace cada comando
+
+- `scan`: ejecuta el reconocimiento sobre un dominio o IP
+- `chat`: abre un chat interactivo sobre un objetivo, usando un `DataStore` vacío si no se pasó un scan previo
+- `check-config`: muestra qué API keys están configuradas y qué módulos quedan disponibles
 
 ## Tests
 
+Ejecutar la suite completa:
+
 ```bash
-# Ejecutar todos los tests
-poetry run pytest tests/ -v
-
-# Un módulo concreto
-poetry run pytest tests/test_dns_module.py -v
-
-# Con cobertura
-poetry run pytest tests/ -v --cov=osint --cov-report=term-missing
-
-# Con reporte HTML de cobertura
-poetry run pytest tests/ --cov=osint --cov-report=html
-# Abre htmlcov/index.html en el navegador
+poetry run pytest tests -v
 ```
 
-**Estrategia de tests:**
+Ejecutar un módulo concreto:
 
-Los tests no hacen peticiones reales a Internet. Cada dependencia externa (aiodns, aiohttp, socket) se mockea para que los tests sean rápidos, deterministas y funcionen sin conexión.
+```bash
+poetry run pytest tests/test_dns_module.py -v
+```
 
-Excepción: el módulo TLS genera certificados X.509 reales usando la librería `cryptography` porque esta opera sobre bytes reales y no acepta mocks.
+Con cobertura:
 
-**Cobertura actual por módulo:**
+```bash
+poetry run pytest tests --cov=osint --cov-report=term-missing
+```
 
-| Módulo | Cobertura |
+## Estado actual del árbol
+
+Hay algunas piezas que conviene conocer para no confundir documentación histórica con el código real:
+
+- no existe un subpaquete `reports/` en el árbol actual
+- no existe un comando `ai-setup` en el CLI actual
+- `rate_limiter.py` está presente como utilidad, pero no está conectado al flujo principal del escaneo
+- `Groq` es el único proveedor de IA realmente implementado en `providers.py`
+- el chat interactivo y el analista de IA sí están integrados en el código actual
+
+## Cómo leer este proyecto como IA
+
+Si estás usando este README como contexto para otra IA, la lectura más útil suele ser esta:
+
+1. `osint/core/datastore.py` para entender el modelo de datos.
+2. `osint/core/orchestrator.py` para entender cómo se ejecutan y agregan módulos.
+3. Un módulo concreto de `osint/modules/` para ver el patrón de extracción y severidad.
+4. `osint/ai/analyst.py` y `osint/ai/chat.py` para ver cómo se construye el contexto de IA.
+5. `osint/cli.py` para entender la entrada real del programa.
+
+## Resumen corto
+
+Este proyecto es un framework OSINT pasivo, modular y asíncrono. Su valor está en combinar fuentes públicas heterogéneas, normalizarlas en un único `DataStore` y, opcionalmente, convertir esos datos en una lectura de seguridad más útil con Groq y el chat interactivo.
+
+Framework modular de reconocimiento OSINT escrito en Python. El proyecto automatiza la recopilación pasiva de información pública sobre un objetivo, consolida los hallazgos en un almacén común, los deduplica y, si hay configuración de IA, genera análisis de mayor nivel y un chat interactivo sobre los resultados.
+
+El alcance es deliberadamente pasivo: consulta DNS, logs de transparencia de certificados, WHOIS, fuentes de exposición de infraestructura, filtraciones y presencia pública en repositorios y redes sociales. No explota vulnerabilidades ni interactúa con el objetivo de forma activa.
+
+## Aviso de uso
+
+Usa esta herramienta solo sobre objetivos propios o con autorización explícita. El proyecto está pensado para auditorías, investigación defensiva, laboratorios y ejercicios de aprendizaje.
+
+## Qué hace
+
+El flujo general es este:
+
+```mermaid
+flowchart TD
+    A[CLI: osint scan/chat/check-config] --> B[Carga config.yaml]
+    B --> C[Orchestrator]
+    C --> D[Modules pasivos]
+    D --> E[DataStore]
+    E --> F[AIAnalyst con Groq]
+    F --> G[InteractiveChat]
+    E --> H[Salida en consola y datos internos]
+```
+
+El proyecto está organizado en capas:
+
+1. **Capa de configuración**: lee el YAML, valida el esquema básico y expone las API keys.
+2. **Capa de ejecución**: el orquestador registra módulos y los ejecuta en paralelo con `asyncio`.
+3. **Capa de recolección**: cada módulo consulta una fuente pública concreta y produce `Finding`.
+4. **Capa de consolidación**: `DataStore` normaliza, deduplica y resume los hallazgos.
+5. **Capa de IA**: Groq genera resúmenes, correlaciones, dorks y score de riesgo.
+6. **Capa interactiva**: el chat permite explorar los resultados en lenguaje natural.
+
+## Qué problema resuelve
+
+En OSINT real, el problema no suele ser encontrar una fuente aislada, sino combinar muchas señales pequeñas. Este proyecto intenta resolver precisamente eso:
+
+- centraliza la recopilación en un único punto de entrada
+- ejecuta módulos en paralelo para reducir tiempo de espera
+- clasifica resultados por severidad
+- elimina duplicados entre módulos
+- añade una capa de análisis cruzado con IA
+- ofrece una conversación interactiva sobre el escaneo ya realizado
+
+## Dependencias
+
+Las dependencias runtime declaradas en `pyproject.toml` son:
+
+- `click`: interfaz de línea de comandos
+- `rich`: salida con formato, paneles, progreso y markdown
+- `structlog`: logs estructurados
+- `pydantic`: modelos de configuración y validación
+- `pyyaml`: lectura de `config.yaml`
+- `aiohttp`: peticiones HTTP asíncronas y streaming SSE
+- `aiodns`: consultas DNS asíncronas
+- `dnspython`: utilidades DNS adicionales y AXFR
+- `cryptography`: análisis de certificados X.509
+- `python-whois`: WHOIS de dominios
+- `ipwhois`: WHOIS de IPs y ASN
+- `tweepy`: acceso a Twitter/X cuando hay token
+
+Las dependencias de desarrollo son:
+
+- `pytest`
+- `pytest-asyncio`
+- `pytest-cov`
+- `ruff`
+- `mypy`
+
+Requisitos base:
+
+- Python 3.11 o superior
+- Poetry
+
+## Estructura del proyecto
+
+### Raíz del repositorio
+
+| Archivo | Qué hace |
 |---|---|
-| `dns_module.py` | 96% |
-| `tls_module.py` | 83% |
-| `whois_module.py` | — (en progreso) |
+| `pyproject.toml` | Define dependencias, scripts de Poetry, versión de Python y configuración de Ruff. |
+| `config.example.yaml` | Plantilla de configuración para crear `config.yaml`. |
+| `config.yaml` | Configuración local real usada por el proyecto. |
+| `README.md` | Documentación principal del proyecto. |
+| `LICENSE` | Licencia del proyecto. |
+| `probar_groq.py` | Script manual para comprobar el proveedor Groq y el streaming. |
+| `probar_analyst.py` | Script manual para probar `AIAnalyst` con un `DataStore` de ejemplo. |
+| `probar_chat.py` | Script manual para probar el chat interactivo con datos sintéticos. |
 
----
+### Paquete `osint`
 
-## Comparativa con herramientas existentes
+| Archivo | Qué hace |
+|---|---|
+| `osint/__init__.py` | Marcador de paquete. |
+| `osint/cli.py` | Entrada principal del CLI con `scan`, `chat` y `check-config`. |
 
-| Característica | osint-framework | theHarvester | Recon-ng | Maltego |
-|---|---|---|---|---|
-| Licencia | MIT (gratis) | MIT (gratis) | BSD (gratis) | Comercial |
-| Módulos mantenidos | ✓ | Parcial | Parcial | ✓ |
-| Ejecución paralela | ✓ (asyncio) | ✗ | Parcial | ✓ |
-| Informe PDF/HTML | ✓ | ✗ | ✗ | ✓ (de pago) |
-| Análisis con IA | ✓ (local/gratis) | ✗ | ✗ | ✗ |
-| Chat sobre resultados | ✓ | ✗ | ✗ | ✗ |
-| Sin API keys obligatorias | ✓ | ✓ | ✓ | ✗ |
-| Configuración | YAML | CLI flags | Consola interactiva | GUI |
+### `osint/core`
 
----
+| Archivo | Qué hace |
+|---|---|
+| `osint/core/__init__.py` | Marcador de paquete. |
+| `osint/core/config.py` | Modelos Pydantic para cargar y validar el YAML. |
+| `osint/core/datastore.py` | Define `Finding`, `Severity` y `DataStore`. |
+| `osint/core/orchestrator.py` | Define `BaseModule` y ejecuta los módulos en paralelo. |
+| `osint/core/rate_limiter.py` | Utilidad de rate limiting y selección de user-agents. |
 
-## Recursos para aprender más
+### `osint/modules`
 
-- **"Open Source Intelligence Techniques"** — Michael Bazzell. La referencia práctica de OSINT.
-- **MITRE ATT&CK TA0043** — Táctica de reconocimiento con técnicas y subtécnicas documentadas. https://attack.mitre.org/tactics/TA0043/
-- **PTES** — Penetration Testing Execution Standard. Marco metodológico donde se encuadra el reconocimiento. http://www.pentest-standard.org/
-- **crt.sh** — Interfaz web de CT Logs para explorar certificados manualmente. https://crt.sh
-- **Shodan** — Motor de búsqueda de dispositivos conectados. https://www.shodan.io
-- **HaveIBeenPwned** — Base de datos de filtraciones de credenciales. https://haveibeenpwned.com
-- **dnspython** — Documentación de la librería DNS usada en este proyecto. https://dnspython.readthedocs.io
-- **cryptography** — Librería Python para operaciones criptográficas. https://cryptography.io
+| Archivo | Qué hace |
+|---|---|
+| `osint/modules/__init__.py` | Marcador de paquete. |
+| `osint/modules/dns_module.py` | Enumeración DNS, AXFR y fuerza bruta opcional de subdominios. |
+| `osint/modules/tls_module.py` | CT logs de `crt.sh` y análisis del certificado TLS activo. |
+| `osint/modules/whois_module.py` | WHOIS de dominio e IP, ASN y proveedor de red. |
+| `osint/modules/shodan_module.py` | Infraestructura expuesta, puertos, banners, CVEs y paneles. |
+| `osint/modules/leaks_module.py` | Filtraciones de credenciales con HIBP o breach.directory. |
+| `osint/modules/socials_module.py` | Reconocimiento de GitHub, Twitter/X y LinkedIn. |
 
----
+### `osint/ai`
 
-*Proyecto de Trabajo de Fin de Grado — Ingeniería Informática, mención en Tecnologías de la Información. Uso exclusivamente ético y con autorización.*
+| Archivo | Qué hace |
+|---|---|
+| `osint/ai/__init__.py` | Marcador de paquete. |
+| `osint/ai/providers.py` | Interfaz de proveedores de LLM y proveedor Groq. |
+| `osint/ai/analyst.py` | Genera resúmenes, correlaciones, dorks y risk score. |
+| `osint/ai/chat.py` | Chat interactivo post-scan con streaming y comandos especiales. |
+
+### Tests
+
+| Archivo | Qué hace |
+|---|---|
+| `tests/__init__.py` | Marcador de paquete. |
+| `tests/test_dns_module.py` | Tests del módulo DNS. |
+| `tests/test_tls_module.py` | Tests del módulo TLS. |
+| `tests/test_whois_module.py` | Tests del módulo WHOIS. |
+| `tests/test_shodan_module.py` | Tests del módulo Shodan. |
+| `tests/test_leaks_module.py` | Tests del módulo de filtraciones. |
+| `tests/test_socials_module.py` | Tests del módulo de redes sociales. |
+
+## Módulos y fuentes de datos
+
+### DNS
+
+El módulo DNS usa `aiodns` y `dnspython` para:
+
+- resolver registros `A`, `AAAA`, `MX`, `NS`, `TXT`, `CNAME` y `SOA`
+- detectar política de correo en `TXT` cuando aparece SPF o DMARC
+- intentar transferencia de zona `AXFR`
+- buscar subdominios por fuerza bruta si se activa `modules.dns.bruteforce`
+
+Los resultados suelen producir hallazgos informativos, pero una transferencia de zona exitosa se marca como alta severidad.
+
+### TLS
+
+El módulo TLS combina dos fuentes:
+
+- `crt.sh` para Certificate Transparency Logs
+- conexión TLS directa al host para analizar el certificado activo
+
+Extrae subdominios, fechas de expiración, SANs, algoritmos débiles, claves RSA cortas y certificados autofirmados.
+
+### WHOIS
+
+El módulo WHOIS usa `python-whois` para dominios y `ipwhois` para IPs. Obtiene:
+
+- registrar y fechas del dominio
+- nameservers
+- registrante cuando está disponible
+- ASN, bloque CIDR y organización de la IP
+- detección de proveedor cloud a partir de la descripción del ASN
+
+### Shodan
+
+El módulo Shodan está pensado para mapear infraestructura expuesta. Usa una secuencia de fuentes:
+
+- Shodan, si hay API key
+- Censys Host Lookup como complemento
+- `ipinfo.io` y resolución DNS estándar como apoyo cuando falta información
+
+Clasifica puertos, banners, paneles de administración, cabeceras de seguridad ausentes y CVEs detectados por banners.
+
+### Filtraciones
+
+El módulo de filtraciones consulta:
+
+- HaveIBeenPwned cuando hay API key
+- breach.directory como alternativa gratuita
+
+Registra resumen de brechas, emails comprometidos y detalles de cada breach cuando están disponibles.
+
+### Socials
+
+El módulo de redes sociales trabaja con:
+
+- GitHub API para organizaciones, usuarios y repositorios públicos
+- Twitter/X vía API si existe token, o mediante dorks si no
+- LinkedIn mediante dorks pasivos en Google
+
+Busca perfiles públicos, confirma relación con el dominio, detecta repositorios sospechosos y expone tecnologías visibles públicamente.
+
+## Capa de IA
+
+La capa de IA está compuesta por tres piezas:
+
+- `BaseProvider` define la interfaz común
+- `GroqProvider` implementa la llamada real a la API de Groq
+- `AIAnalyst` genera análisis de más alto nivel sobre el `DataStore`
+- `InteractiveChat` permite conversar con el contexto del scan
+
+### Qué genera `AIAnalyst`
+
+- resumen ejecutivo
+- correlaciones entre módulos
+- Google dorks personalizados
+- score de riesgo global
+
+### Qué hace el chat
+
+- mantiene historial de conversación
+- inyecta el contexto del scan y los insights previos
+- soporta streaming token a token
+- ofrece comandos especiales como `/resumen`, `/correlaciones`, `/dorks` y `/riesgo`
+
+## Data model
+
+El proyecto gira alrededor de dos objetos:
+
+```python
+Finding(
+    module="dns",
+    type="subdomain",
+    value="dev.ejemplo.com",
+    severity="low",
+    source="dns/bruteforce",
+    metadata={"ips": ["1.2.3.4"]},
+)
+```
+
+`DataStore` deduplica por la clave `module:type:value`, así que dos módulos que descubran el mismo dato no lo duplican en el resumen final. Además permite filtrar por módulo, severidad o tipo, y generar un resumen agregado.
+
+## Cómo se ejecuta un scan
+
+1. `cli.py` recibe el target y carga `config.yaml`.
+2. `Orchestrator` construye y registra los módulos disponibles.
+3. Cada módulo se ejecuta en paralelo con `asyncio.gather()`.
+4. Los findings retornan al `DataStore`.
+5. Si Groq está configurado, `AIAnalyst` añade insights de nivel superior.
+6. Si no se desactiva, `InteractiveChat` abre una sesión sobre el resultado.
+
+## Configuración
+
+La plantilla base está en `config.example.yaml`. Los campos que el código usa hoy son estos:
+
+```yaml
+apis:
+  groq: "API_KEY_GROQ"
+  shodan: "API_KEY_SHODAN"
+  hibp: "API_KEY_HIBP"
+  github: "API_KEY_GITHUB"
+  twitter: "API_KEY_TWITTER"
+  censys_id: "API_KEY_CENSYS_ID"
+  censys_secret: "API_KEY_CENSYS_SECRET"
+
+network:
+  timeout: 10
+  retries: 3
+  proxy: null
+
+modules:
+  dns:
+    enabled: true
+    bruteforce: false
+    wordlist: null
+    resolvers: ["8.8.8.8", "1.1.1.1"]
+
+output:
+  directory: "./reports"
+  formats: ["json", "html"]
+```
+
+### Nota importante sobre la configuración de IA
+
+El archivo de ejemplo incluye una sección `ai`, pero el modelo `Config` actual solo persiste `apis`, `network`, `modules` y `output`. En la versión actual eso significa que la sección `ai` del YAML no forma parte del objeto validado por `Config` salvo que se amplíe el modelo. El proveedor Groq sigue funcionando porque el código cae en valores por defecto y lee la API key de `apis.groq`.
+
+## Uso
+
+Instalación y primer arranque:
+
+```bash
+git clone https://github.com/0xAudit-Path/osint-framework.git
+cd osint-framework
+poetry install
+cp config.example.yaml config.yaml
+```
+
+Comandos principales:
+
+```bash
+poetry run osint scan ejemplo.com
+poetry run osint scan ejemplo.com -m dns -m tls -m whois
+poetry run osint scan ejemplo.com -f json -f html -f csv
+poetry run osint scan ejemplo.com -o ./mis-informes
+poetry run osint chat ejemplo.com
+poetry run osint check-config
+```
+
+### Qué hace cada comando
+
+- `scan`: ejecuta el reconocimiento sobre un dominio o IP
+- `chat`: abre un chat interactivo sobre un objetivo, usando un `DataStore` vacío si no se pasó un scan previo
+- `check-config`: muestra qué API keys están configuradas y qué módulos quedan disponibles
+
+## Tests
+
+Ejecutar la suite completa:
+
+```bash
+poetry run pytest tests -v
+```
+
+Ejecutar un módulo concreto:
+
+```bash
+poetry run pytest tests/test_dns_module.py -v
+```
+
+Con cobertura:
+
+```bash
+poetry run pytest tests --cov=osint --cov-report=term-missing
+```
+
+## Estado actual del árbol
+
+Hay algunas piezas que conviene conocer para no confundir documentación histórica con el código real:
+
+- no existe un subpaquete `reports/` en el árbol actual
+- no existe un comando `ai-setup` en el CLI actual
+- `rate_limiter.py` está presente como utilidad, pero no está conectado al flujo principal del escaneo
+- `Groq` es el único proveedor de IA realmente implementado en `providers.py`
+- el chat interactivo y el analista de IA sí están integrados en el código actual
+
+## Cómo leer este proyecto como IA
+
+Si estás usando este README como contexto para otra IA, la lectura más útil suele ser esta:
+
+1. `osint/core/datastore.py` para entender el modelo de datos.
+2. `osint/core/orchestrator.py` para entender cómo se ejecutan y agregan módulos.
+3. Un módulo concreto de `osint/modules/` para ver el patrón de extracción y severidad.
+4. `osint/ai/analyst.py` y `osint/ai/chat.py` para ver cómo se construye el contexto de IA.
+5. `osint/cli.py` para entender la entrada real del programa.
+
+## Resumen corto
+
+Este proyecto es un framework OSINT pasivo, modular y asíncrono. Su valor está en combinar fuentes públicas heterogéneas, normalizarlas en un único `DataStore` y, opcionalmente, convertir esos datos en una lectura de seguridad más útil con Groq y el chat interactivo.
+
