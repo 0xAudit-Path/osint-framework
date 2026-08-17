@@ -12,19 +12,22 @@ log = structlog.get_logger()
 # Prompt del sistema que define el rol del modelo para toda la sesión.
 # Cuanto más contexto de seguridad tenga, menos "alucinaciones" y más respuestas 
 # técnicas precisas producirá.
-SYSTEM_PROMPT = """Eres un analista experto en ciberseguridad ofensiva y OSINT.
+SYSTEM_PROMPT = """Eres un analista experto en ciberseguridad defensiva, ofensiva y OSINT.
 Has realizado un reconocimiento pasivo sobre un objetivo usando fuentes públicas.
 Tu función es analizar los hallazgos recopilados, identificar riesgos reales,
 correlacionar evidencias entre distintas fuentes y comunicar los resultados
-con precisión técnica.
+con precisión técnica. Responde a las preguntas del usuario de forma ultra-concisa 
+y directa.
 
 Reglas estrictas:
+- Máximo 300 palabras por respuesta.
 - Nunca inventes hallazgos que no estén en los datos proporcionados
 - Si algo no está claro en los datos, indícalo explícitamente
 - Usa terminología técnica de seguridad apropiada
+- No generes tablas gigantescas ni introducciones largas.
 - Prioriza por impacto real, no por cantidad de hallazgos
+- Usa listas con viñetas cortas.
 - Responde siempre en español"""
-
 
 @dataclass
 class AIInsight:
@@ -110,7 +113,7 @@ Estructura tu respuesta así:
 2. Los 3 hallazgos más críticos con su riesgo real
 3. Recomendaciones de acción inmediata
 
-Sé directo y técnico. No repitas los datos crudos, interprètalos.""",
+Sé directo y técnico. No repitas los datos crudos, interprétalos.""",
             },
         ]
 
@@ -256,89 +259,68 @@ Prioriza dorks que busquen:
         )
 
     async def _calcular_risk_score(self, datastore: DataStore) -> AIInsight:
-        """
-        Calcula un score de riesgo global de 0 a 100.
-
-        Pedimos JSON estructurado con temperatura muy baja (0.1)
-        para maximizar la consistencia entre ejecuciones.
-        El código incluye parsing robusto ante respuestas mal formateadas.
-        """
-        resumen  = datastore.summary()
-        high     = [f.to_dict() for f in datastore.by_severity(Severity.HIGH)][:8]
-        medium   = [f.to_dict() for f in datastore.by_severity(Severity.MEDIUM)][:8]
+        resumen = datastore.summary()
+        static_risk = datastore.calculate_static_risk()
+        high = [f.to_dict() for f in datastore.by_severity(Severity.HIGH)][:8]
+        medium = [f.to_dict() for f in datastore.by_severity(Severity.MEDIUM)][:8]
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": f"""Evalúa el nivel de riesgo de exposición basándote 
-                               en estos hallazgos OSINT.
+                "content": f"""Evalúa el nivel de riesgo contextual considerando la combinación de hallazgos.
 
-Resumen:
-{json.dumps(resumen, indent=2)}
+    1. Score Estático de las reglas fijas: {static_risk['score']}/100 ({static_risk['nivel']})
+    2. Resumen cuantitativo: {json.dumps(resumen, indent=2)}
+    3. Hallazgos clave (HIGH/MEDIUM): {json.dumps(high + medium, ensure_ascii=False)}
 
-Hallazgos HIGH:
-{json.dumps(high, indent=2, ensure_ascii=False)}
+    Tu objetivo es determinar el **Score Contextual (IA)** teniendo en cuenta software EOL (Apache 2.4.7, OpenSSH 6.6), puertos raros (31337) y falta de cabeceras.
 
-Hallazgos MEDIUM:
-{json.dumps(medium, indent=2, ensure_ascii=False)}
-
-Responde ÚNICAMENTE con un objeto JSON con esta estructura exacta, sin texto adicional:
-{{
-  "score": <número entero 0-100>,
-  "nivel": "<CRÍTICO|ALTO|MEDIO|BAJO>",
-  "justificacion": "<2-3 frases explicando el score>",
-  "factores_principales": ["<factor1>", "<factor2>", "<factor3>"]
-}}""",
+    Responde ÚNICAMENTE con este JSON exacto:
+    {{
+    "score_estatico": {static_risk['score']},
+    "score_contextual_ia": <número entero 0-100>,
+    "nivel_ia": "<CRÍTICO|ALTO|MEDIO|BAJO>",
+    "justificacion": "<Breve explicación comparando por qué el score contextual difiere o coincide con el estático>",
+    "factores_agravantes": ["<factor1>", "<factor2>"]
+    }}""",
             },
         ]
 
         response = await self.provider.complete(
             messages=messages,
             temperature=0.1,
-            max_tokens=300,
+            max_tokens=350,
         )
 
-        # Parseamos el JSON con múltiples estrategias de fallback
         content = self._parsear_risk_score(response.content)
 
         return AIInsight(
             type="risk_score",
-            title="Score de Riesgo Global",
+            title="Evaluación Doble de Riesgo (Estático vs IA)",
             content=content,
-            confidence=0.82,
+            confidence=0.85,
         )
 
     def _parsear_risk_score(self, texto: str) -> str:
-        """
-        Parsea la respuesta JSON del risk score de forma robusta.
-
-        Los modelos a veces añaden texto antes o después del JSON,
-        o lo envuelven en bloques de código markdown. Esta función
-        maneja todos esos casos sin lanzar excepciones.
-        """
-        # Limpiamos bloques de código markdown si los hay
         raw = texto.strip()
         if "```" in raw:
             partes = raw.split("```")
             for parte in partes:
-                parte = parte.strip()
-                if parte.startswith("json"):
-                    parte = parte[4:]
-                if parte.strip().startswith("{"):
-                    raw = parte.strip()
+                if parte.strip().startswith("json"):
+                    raw = parte.strip()[4:]
                     break
 
         try:
             data = json.loads(raw)
             return (
-                f"**Score de riesgo: {data['score']}/100 — {data['nivel']}**\n\n"
-                f"{data['justificacion']}\n\n"
-                f"Factores principales:\n"
-                + "\n".join(f"- {f}" for f in data.get("factores_principales", []))
+                f"**Score Estático (Módulos):** {data.get('score_estatico', 0)}/100\n"
+                f"**Score Contextual (IA):** {data['score_contextual_ia']}/100 — **{data['nivel_ia']}**\n\n"
+                f"**Análisis comparativo:**\n{data['justificacion']}\n\n"
+                f"Factores de riesgo contextuales:\n"
+                + "\n".join(f"- {f}" for f in data.get("factores_agravantes", []))
             )
-        except (json.JSONDecodeError, KeyError):
-            # Fallback: devolvemos el texto tal cual si el JSON falla
+        except Exception:
             return texto
 
     def _construir_contexto(self, datastore: DataStore, target: str) -> str:

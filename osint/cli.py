@@ -249,11 +249,17 @@ def check_config(config: Path):
         else:
             console.print(f"  [yellow]—[/yellow] {descripcion} [dim](no configurada)[/dim]")
 
-    # Estado de la IA corregido
+    # Estado de la IA corregido y robusto
     console.print("\n[bold]Inteligencia Artificial:[/bold]")
     ai_cfg = getattr(cfg, "ai", {})
-    provider_name = getattr(ai_cfg, "provider", ai_cfg.get("provider", "desconocido") if isinstance(ai_cfg, dict) else "desconocido")
-    model_name = getattr(ai_cfg, "model", ai_cfg.get("model", "desconocido") if isinstance(ai_cfg, dict) else "desconocido")
+
+    # Extracción segura de provider y model
+    if isinstance(ai_cfg, dict):
+        provider_name = ai_cfg.get("provider", "desconocido")
+        model_name = ai_cfg.get("model", "desconocido")
+    else:
+        provider_name = getattr(ai_cfg, "provider", "desconocido")
+        model_name = getattr(ai_cfg, "model", "desconocido")
 
     console.print(f"  [cyan]•[/cyan] Proveedor activo: [bold]{provider_name}[/bold]")
     console.print(f"  [cyan]•[/cyan] Modelo activo: [bold]{model_name}[/bold]")

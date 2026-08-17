@@ -117,3 +117,32 @@ class DataStore:
             )
             ds.add(finding)
         return ds
+
+    def calculate_static_risk(self) -> dict:
+        """
+        Calcula un score de riesgo estático (0-100) basado en reglas fijas
+        y ponderación por severidad.
+        """
+        pesos = {
+            Severity.HIGH: 25,
+            Severity.MEDIUM: 10,
+            Severity.LOW: 2,
+            Severity.INFO: 0,
+        }
+
+        puntuacion_raw = sum(
+            len(self.by_severity(sev)) * peso 
+            for sev, peso in pesos.items()
+        )
+        score_final = min(100, puntuacion_raw)
+
+        if score_final >= 75:
+            nivel = "CRÍTICO"
+        elif score_final >= 50:
+            nivel = "ALTO"
+        elif score_final >= 25:
+            nivel = "MEDIO"
+        else:
+            nivel = "BAJO"
+
+        return {"score": score_final, "nivel": nivel}
