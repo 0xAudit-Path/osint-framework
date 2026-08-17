@@ -16,7 +16,7 @@ probar_analyst.py
 probar_groq.py
 
 # Informes generados
-reports/
+/reports/
 
 # Tests
 .coverage
