@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch  # noqa: I001
 
 import pytest
 
@@ -85,6 +85,7 @@ async def test_consulta_registro_a_crea_finding(dns_module):
     """
     # Simulamos la respuesta de aiodns para un registro A
     mock_registro = MagicMock()
+    mock_registro.host = "93.184.216.34"
     mock_registro.__str__ = MagicMock(return_value="93.184.216.34")
 
     mock_resolver = MagicMock()
@@ -98,7 +99,6 @@ async def test_consulta_registro_a_crea_finding(dns_module):
     assert finding.value == "93.184.216.34"
     assert finding.module == "dns"
     assert finding.severity == Severity.INFO
-
 
 @pytest.mark.asyncio
 async def test_consulta_registro_mx_crea_finding(dns_module):
