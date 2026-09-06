@@ -84,9 +84,6 @@ Requisitos base:
 | `config.yaml` | Configuración local real usada por el proyecto. |
 | `README.md` | Documentación principal del proyecto. |
 | `LICENSE` | Licencia del proyecto. |
-| `probar_groq.py` | Script manual para comprobar el proveedor Groq y el streaming. |
-| `probar_analyst.py` | Script manual para probar `AIAnalyst` con un `DataStore` de ejemplo. |
-| `probar_chat.py` | Script manual para probar el chat interactivo con datos sintéticos. |
 
 ### Paquete `osint`
 
