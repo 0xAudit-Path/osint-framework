@@ -296,7 +296,6 @@ def build_provider(config: "Config") -> BaseProvider:  # type: ignore[name-defin
 
     """
     raw_ai = getattr(config, "ai", None)
-    print(f"\n[DEBUG AI] Objeto config.ai recibido: {raw_ai} (Tipo: {type(raw_ai)})")
     proveedor = "groq"
     modelo = "llama-3.3-70b-versatile"
 
@@ -308,7 +307,6 @@ def build_provider(config: "Config") -> BaseProvider:  # type: ignore[name-defin
         proveedor = getattr(ai_config, "provider", "ollama").lower()
         modelo    = getattr(ai_config, "model", "llama-3.1-8b-instant")
 
-    print(f"[DEBUG AI] Proveedor resuelto: '{proveedor}' | Modelo: '{modelo}'\n")
 
     if proveedor == "ollama":
         return OllamaProvider(model=modelo)
