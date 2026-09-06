@@ -14,6 +14,7 @@ config.yaml
 # Pruebas locales
 probar_analyst.py
 probar_groq.py
+probar_chat.py
 
 # Informes generados
 /reports/
