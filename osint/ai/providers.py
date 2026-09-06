@@ -1,11 +1,13 @@
 import json
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 import aiohttp
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, AsyncIterator, Optional
-
-if TYPE_CHECKING: from osint.core.config import Config
+if TYPE_CHECKING:
+    from osint.core.config import Config
 
 
 @dataclass
@@ -92,9 +94,15 @@ class OllamaProvider(BaseProvider):
         max_tokens: int = 1000,
     ) -> LLMResponse:
         # Convertimos el formato de mensajes al prompt plano de Ollama /generate
-        system_prompt = next((m["content"] for m in messages if m["role"] == "system"), "")
+        system_prompt = next(
+            (m["content"] for m in messages if m["role"] == "system"), ""
+        )
         user_prompt = next((m["content"] for m in messages if m["role"] == "user"), "")
-        prompt_completo = f"{system_prompt}\n\nPregunta: {user_prompt}" if system_prompt else user_prompt
+        prompt_completo = (
+            f"{system_prompt}\n\nPregunta: {user_prompt}"
+            if system_prompt
+            else user_prompt
+        )
 
         payload = {
             "model": self.model,
@@ -119,7 +127,12 @@ class OllamaProvider(BaseProvider):
         except Exception as e:
             raise RuntimeError(f"Error conectando con Ollama local: {e}")
 
-    async def stream(self, messages: list[dict], temperature: float = 0.3, max_tokens: int = 1000) -> AsyncIterator[LLMStreamChunk]:
+    async def stream(
+        self,
+        messages: list[dict],
+        temperature: float = 0.3,
+        max_tokens: int = 1000,
+    ) -> AsyncIterator[LLMStreamChunk]:
         # Implementación ligera de stream para la CLI
         res = await self.complete(messages, temperature, max_tokens)
         yield LLMStreamChunk(delta=res.content, finished=True)
@@ -295,7 +308,6 @@ def build_provider(config: "Config") -> BaseProvider:  # type: ignore[name-defin
     Factory que construye el proveedor correcto según config.yaml.
 
     """
-    raw_ai = getattr(config, "ai", None)
     proveedor = "groq"
     modelo = "llama-3.3-70b-versatile"
 
