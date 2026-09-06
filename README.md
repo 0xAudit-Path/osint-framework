@@ -200,8 +200,6 @@ poetry run ruff check .
 poetry run mypy osint
 ```
 
-Los scripts `probar_groq.py`, `probar_analyst.py` y `probar_chat.py` sirven para comprobaciones manuales de la integración de IA.
-
 ## Licencia
 
 El proyecto se distribuye bajo la licencia MIT. Consulta [`LICENSE`](LICENSE).
