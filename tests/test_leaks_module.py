@@ -155,6 +155,11 @@ def test_extrae_dominio_raiz_multiple_subdominios(modulo_sin_key):
     assert modulo_sin_key._extraer_dominio_raiz("a.b.c.ejemplo.com") == "ejemplo.com"
 
 
+def test_extrae_dominio_raiz_de_target_sin_punto(modulo_sin_key):
+    """Un target sin punto también se normaliza y se devuelve completo."""
+    assert modulo_sin_key._extraer_dominio_raiz("  LOCALHOST  ") == "localhost"
+
+
 # ---------------------------------------------------------------------------
 # Tests del proveedor HIBP
 # ---------------------------------------------------------------------------
@@ -190,6 +195,55 @@ async def test_hibp_401_no_falla(modulo_con_hibp):
         await modulo_con_hibp._consultar_brechas_dominio("ejemplo.com")
 
     assert len(modulo_con_hibp.findings) == 0
+
+
+@pytest.mark.asyncio
+async def test_hibp_429_reintenta_y_procesa_respuesta(modulo_con_hibp):
+    """Un 429 debe reintentar una vez y procesar una respuesta posterior válida."""
+    mock_session = mock_sesion_http(200, HIBP_DOMINIO_MOCK)
+    primera_respuesta = MagicMock()
+    primera_respuesta.status = 429
+    primera_respuesta.json = AsyncMock(return_value={})
+    primera_respuesta.__aenter__ = AsyncMock(return_value=primera_respuesta)
+    primera_respuesta.__aexit__ = AsyncMock(return_value=None)
+    segunda_respuesta = mock_session.get.return_value
+    mock_session.get.side_effect = [primera_respuesta, segunda_respuesta]
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with patch.object(
+                modulo_con_hibp,
+                "_procesar_respuesta_dominio",
+                new_callable=AsyncMock,
+            ) as mock_process:
+                await modulo_con_hibp._consultar_brechas_dominio("ejemplo.com")
+
+    mock_sleep.assert_awaited_once_with(2.0)
+    mock_process.assert_awaited_once_with(HIBP_DOMINIO_MOCK, "ejemplo.com")
+
+
+@pytest.mark.asyncio
+async def test_hibp_429_no_procesa_si_el_reintento_falla(modulo_con_hibp):
+    """Si el segundo intento no es 200, HIBP debe abandonar sin findings."""
+    mock_session = mock_sesion_http(503)
+    primera_respuesta = MagicMock()
+    primera_respuesta.status = 429
+    primera_respuesta.__aenter__ = AsyncMock(return_value=primera_respuesta)
+    primera_respuesta.__aexit__ = AsyncMock(return_value=None)
+    mock_session.get.side_effect = [primera_respuesta, mock_session.get.return_value]
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await modulo_con_hibp._consultar_brechas_dominio("ejemplo.com")
+
+    assert modulo_con_hibp.findings == []
+
+
+@pytest.mark.asyncio
+async def test_hibp_ignora_respuesta_vacia(modulo_con_hibp):
+    """Una respuesta HIBP vacía no debe crear findings."""
+    await modulo_con_hibp._procesar_respuesta_dominio({}, "ejemplo.com")
+    assert modulo_con_hibp.findings == []
 
 
 @pytest.mark.asyncio
@@ -259,6 +313,29 @@ async def test_hibp_severidad_low_con_una_cuenta(modulo_con_hibp):
 
     resumen = [f for f in modulo_con_hibp.findings if f.type == "domain_breach_summary"]
     assert resumen[0].severity == Severity.LOW
+
+
+@pytest.mark.asyncio
+async def test_consulta_detalle_brecha_procesa_respuesta(modulo_con_hibp):
+    """Una respuesta válida del endpoint de detalle se transforma en finding."""
+    mock_session = mock_sesion_http(200, HIBP_BRECHA_DETALLE_MOCK)
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            await modulo_con_hibp._consultar_detalle_brecha("Adobe", "ejemplo.com")
+
+    mock_sleep.assert_awaited_once_with(1.5)
+    assert modulo_con_hibp.findings[0].type == "breach_detail"
+
+
+@pytest.mark.asyncio
+async def test_consulta_detalle_brecha_estado_no_200_no_falla(modulo_con_hibp):
+    """Un estado distinto de 200 no debe crear findings ni propagar errores."""
+    mock_session = mock_sesion_http(404)
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await modulo_con_hibp._consultar_detalle_brecha("Adobe", "ejemplo.com")
+
+    assert modulo_con_hibp.findings == []
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +454,9 @@ async def test_breach_directory_429_crea_finding_rate_limited(modulo_sin_key):
     with patch("aiohttp.ClientSession", return_value=mock_session):
         await modulo_sin_key._consultar_breach_directory("ejemplo.com")
 
-    rate_limited = [f for f in modulo_sin_key.findings if f.type == "leaks_rate_limited"]
+    rate_limited = [
+        f for f in modulo_sin_key.findings if f.type == "leaks_rate_limited"
+    ]
     assert len(rate_limited) == 1
     assert rate_limited[0].severity == Severity.INFO
     assert "HIBP" in rate_limited[0].metadata["message"]
@@ -392,6 +471,16 @@ async def test_breach_directory_error_red_no_falla(modulo_sin_key):
         await modulo_sin_key._consultar_breach_directory("ejemplo.com")
 
     assert len(modulo_sin_key.findings) == 0
+
+
+@pytest.mark.asyncio
+async def test_breach_directory_estado_no_200_no_falla(modulo_sin_key):
+    """Un estado HTTP inesperado se ignora sin crear findings."""
+    mock_session = mock_sesion_http(500)
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        await modulo_sin_key._consultar_breach_directory("ejemplo.com")
+
+    assert modulo_sin_key.findings == []
 
 
 def test_breach_directory_severidad_high_muchos_resultados(modulo_sin_key):
@@ -416,6 +505,33 @@ def test_breach_directory_emails_se_registran_como_high(modulo_sin_key):
     emails = [f for f in modulo_sin_key.findings if f.type == "compromised_email"]
     for email_finding in emails:
         assert email_finding.severity == Severity.HIGH
+
+
+def test_breach_directory_usa_username_y_omite_registro_sin_identidad(modulo_sin_key):
+    """Debe aceptar username como identidad y omitir registros sin email/username."""
+    datos = {
+        "found": True,
+        "result": [
+            {"username": "admin", "sources": ["BreachA"]},
+            {"sources": ["BreachB"]},
+        ],
+    }
+    modulo_sin_key._procesar_breach_directory(datos, "ejemplo.com")
+
+    emails = [f for f in modulo_sin_key.findings if f.type == "compromised_email"]
+    assert len(emails) == 1
+    assert emails[0].value == "admin"
+
+
+def test_breach_directory_severidad_low_un_resultado(modulo_sin_key):
+    """Un único registro encontrado debe producir un resumen LOW."""
+    modulo_sin_key._procesar_breach_directory(
+        {"found": True, "result": [{"email": "admin@ejemplo.com"}]},
+        "ejemplo.com",
+    )
+
+    resumen = [f for f in modulo_sin_key.findings if f.type == "domain_breach_summary"]
+    assert resumen[0].severity == Severity.LOW
 
 
 # ---------------------------------------------------------------------------
