@@ -327,19 +327,18 @@ Prioriza dorks que busquen:
         """
         Serializa el DataStore de forma compacta para el contexto del LLM.
 
-        El problema: un escaneo puede producir cientos de hallazgos.
-        Los modelos tienen contexto limitado (~8k tokens en modelos pequeños).
-        Solución: mostramos los más relevantes por severidad y truncamos el resto.
-
-        Regla: HIGH (todos) + MEDIUM (top 15) + LOW (top 10) + INFO (top 5)
+        Conserva todos los hallazgos para que el análisis no pierda datos
+        de baja severidad, como puertos, tecnologías o registros informativos.
+        La clasificación y priorización se realiza después sobre el conjunto
+        completo recibido.
         """
         lineas = [f"Objetivo: {target}", ""]
 
         limites = {
-            Severity.HIGH:   None,  # todos los HIGH sin límite
-            Severity.MEDIUM: 15,
-            Severity.LOW:    10,
-            Severity.INFO:   5,
+            Severity.HIGH:   None,
+            Severity.MEDIUM: None,
+            Severity.LOW:    None,
+            Severity.INFO:   None,
         }
 
         for severidad, limite in limites.items():
@@ -352,14 +351,8 @@ Prioriza dorks que busquen:
 
             for f in mostrados:
                 linea = f"  • [{f.module}] {f.type}: {f.value}"
-                # Añadimos metadatos relevantes sin saturar el contexto
-                meta_interesante = {
-                    k: v for k, v in f.metadata.items()
-                    if k in ("port", "version", "cvss", "country", 
-                             "org", "breach_count")
-                }
-                if meta_interesante:
-                    linea += f" | {meta_interesante}"
+                if f.metadata:
+                    linea += f" | {f.metadata}"
                 lineas.append(linea)
 
             if limite and len(findings) > limite:
