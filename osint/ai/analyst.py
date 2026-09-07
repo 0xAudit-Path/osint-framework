@@ -304,24 +304,41 @@ Prioriza dorks que busquen:
 
     def _parsear_risk_score(self, texto: str) -> str:
         raw = texto.strip()
+        candidatos = [raw]
         if "```" in raw:
-            partes = raw.split("```")
-            for parte in partes:
-                if parte.strip().startswith("json"):
-                    raw = parte.strip()[4:]
-                    break
+            candidatos.extend(
+                parte.strip().removeprefix("json").strip()
+                for parte in raw.split("```")
+            )
 
-        try:
-            data = json.loads(raw)
+        inicio = raw.find("{")
+        fin = raw.rfind("}")
+        if inicio >= 0 and fin > inicio:
+            candidatos.append(raw[inicio : fin + 1])
+
+        for candidato in candidatos:
+            try:
+                data = json.loads(candidato)
+            except (TypeError, json.JSONDecodeError):
+                continue
+
+            factores = data.get("factores_agravantes", [])
+            factores_md = "\n".join(f"- {factor}" for factor in factores)
             return (
                 f"**Score Estático (Módulos):** {data.get('score_estatico', 0)}/100\n"
-                f"**Score Contextual (IA):** {data['score_contextual_ia']}/100 — **{data['nivel_ia']}**\n\n"
-                f"**Análisis comparativo:**\n{data['justificacion']}\n\n"
-                f"Factores de riesgo contextuales:\n"
-                + "\n".join(f"- {f}" for f in data.get("factores_agravantes", []))
+                f"**Score Contextual (IA):** "
+                f"{data.get('score_contextual_ia', 0)}/100 — "
+                f"**{data.get('nivel_ia', 'SIN CLASIFICAR')}**\n\n"
+                f"**Análisis comparativo:**\n"
+                f"{data.get('justificacion', 'No disponible.')}\n\n"
+                f"**Factores de riesgo contextuales:**\n{factores_md}"
             )
-        except Exception:
-            return texto
+
+        return texto if not texto.lstrip().startswith("{") else (
+            "**Evaluación de riesgo no disponible**\n\n"
+            "La respuesta de la IA no pudo interpretarse como una evaluación "
+            "estructurada."
+        )
 
     def _construir_contexto(self, datastore: DataStore, target: str) -> str:
         """
