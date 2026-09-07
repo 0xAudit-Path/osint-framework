@@ -173,7 +173,11 @@ class HTMLExporter:
         Devuelve None si el formato no coincide, para poder hacer fallback
         a mostrarlo como un insight normal sin perder información.
         """
-        m = re.search(r"Score de riesgo:\s*(\d+)\s*/\s*100\s*[—-]\s*(\w+)", contenido)
+        m = re.search(
+            r"\*{0,2}Score Contextual \(IA\):\*{0,2}\s*(\d+)\s*/\s*100\s*[—-]\s*\*{0,2}"
+            r"([A-ZÁÉÍÓÚ]+)\*{0,2}",
+            contenido,
+        )
         if not m:
             return None
         return int(m.group(1)), m.group(2)
@@ -261,7 +265,7 @@ class HTMLExporter:
 
     @classmethod
     def _panel_risk_score(cls, score: int, nivel: str, contenido_completo: str) -> str:
-        """Panel destacado del score de riesgo global, con gauge de color."""
+        """Panel destacado del score de riesgo global, con gauge circular."""
         if score >= 70:
             color = "#ef4444"
         elif score >= 40:
@@ -272,19 +276,25 @@ class HTMLExporter:
         # El resto del texto (justificación y factores) se muestra debajo del gauge,
         # reutilizando el mismo conversor seguro de markdown ligero.
         cuerpo_html = cls._texto_insight_a_html(contenido_completo)
+        radio = 52
+        circunferencia = 2 * 3.14159265 * radio
+        offset = circunferencia * (1 - score / 100)
 
         return f"""
         <div class="risk-panel">
-            <div class="risk-gauge-wrap">
-                <div class="risk-gauge-track">
-                    <div class="risk-gauge-fill" style="width:{score}%; background:{color};"></div>
-                </div>
+            <figure class="risk-figure" aria-label="Score de riesgo: {score} sobre 100">
+                <svg viewBox="0 0 140 140" class="risk-gauge-svg" role="img">
+                    <circle cx="70" cy="70" r="{radio}" class="risk-gauge-track" />
+                    <circle cx="70" cy="70" r="{radio}" class="risk-gauge-fill"
+                        stroke="{color}" stroke-dasharray="{circunferencia:.2f}"
+                        stroke-dashoffset="{offset:.2f}" />
+                </svg>
                 <div class="risk-gauge-numbers">
                     <span class="risk-score-big" style="color:{color};">{score}</span>
                     <span class="risk-score-max">/100</span>
-                    <span class="risk-nivel-badge" style="background:{color};">{cls._esc(nivel)}</span>
                 </div>
-            </div>
+                <figcaption class="risk-nivel-badge" style="background:{color};">{cls._esc(nivel)}</figcaption>
+            </figure>
             <div class="risk-detail">{cuerpo_html}</div>
         </div>
         """
@@ -533,9 +543,9 @@ class HTMLExporter:
         /* Panel de Risk Score */
         .risk-panel {{
             display: grid;
-            grid-template-columns: 260px 1fr;
+            grid-template-columns: 220px 1fr;
             gap: 2rem;
-            background: linear-gradient(110deg, #f0fdfa, #f8fafc);
+            background: #ffffff;
             border: 1px solid var(--border);
             border-radius: 8px;
             padding: 1.5rem 1.75rem;
@@ -543,25 +553,46 @@ class HTMLExporter:
             align-items: center;
         }}
 
+        .risk-figure {{
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            min-height: 220px;
+        }}
+
+        .risk-gauge-svg {{
+            width: 160px;
+            height: 160px;
+            transform: rotate(-90deg);
+        }}
+
+        .risk-gauge-track, .risk-gauge-fill {{
+            fill: none;
+            stroke-width: 14;
+        }}
+
         .risk-gauge-track {{
-            width: 100%;
-            height: 14px;
-            background: #e2e8f0;
-            border-radius: 7px;
-            overflow: hidden;
+            stroke: #e5e7eb;
         }}
 
         .risk-gauge-fill {{
-            height: 100%;
-            border-radius: 7px;
-            transition: width 0.3s;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 0.4s ease;
         }}
 
         .risk-gauge-numbers {{
+            position: absolute;
+            top: 78px;
+            left: 0;
+            width: 100%;
             display: flex;
+            justify-content: center;
             align-items: baseline;
-            gap: 0.4rem;
-            margin-top: 0.75rem;
+            gap: 0.25rem;
+            min-height: 2.6rem;
         }}
 
         .risk-score-big {{
@@ -576,8 +607,12 @@ class HTMLExporter:
             font-weight: 600;
         }}
 
+        .risk-figure .risk-nivel-badge {{
+            margin-top: 0.75rem;
+            z-index: 1;
+        }}
+
         .risk-nivel-badge {{
-            margin-left: auto;
             color: white;
             font-size: 0.75rem;
             font-weight: 800;
