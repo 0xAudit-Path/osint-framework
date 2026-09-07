@@ -194,7 +194,7 @@ class InteractiveChat:
             async for chunk in self.provider.stream(
                 messages=messages,
                 temperature=0.3,
-                max_tokens=800,
+                max_tokens=1200,
             ):
                 acumulado += chunk.delta
 
@@ -222,7 +222,7 @@ class InteractiveChat:
         response = await self.provider.complete(
             messages=messages,
             temperature=0.3,
-            max_tokens=800,
+            max_tokens=1200,
         )
         console.print(
             Panel(
