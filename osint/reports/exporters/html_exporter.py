@@ -56,15 +56,115 @@ class HTMLExporter:
     @classmethod
     def _texto_insight_a_html(cls, contenido: str) -> str:
         """
-        Convierte el texto del insight (generado por la IA en markdown ligero)
-        a HTML seguro: escapa el contenido y luego interpreta **negrita**.
-        El resto del formato (saltos de línea, guiones de lista) se conserva
-        tal cual gracias a `white-space: pre-line` en el CSS.
+        Convierte un subconjunto útil de Markdown a HTML seguro sin depender
+        de una librería externa. El contenido se escapa antes de añadir las
+        etiquetas generadas por el parser.
         """
+        lineas = contenido.replace("\r\n", "\n").split("\n")
+        resultado = []
+        lista = None
+        parrafo = []
+
+        def cerrar_parrafo():
+            if parrafo:
+                resultado.append(f'<p>{cls._markdown_inline(" ".join(parrafo))}</p>')
+                parrafo.clear()
+
+        def cerrar_lista():
+            nonlocal lista
+            if lista:
+                resultado.append(f"</{lista}>")
+                lista = None
+
+        for linea in lineas:
+            texto = linea.strip()
+            if not texto:
+                cerrar_parrafo()
+                cerrar_lista()
+                continue
+
+            encabezado = re.match(r"^(#{1,3})\s+(.+)$", texto)
+            if encabezado:
+                cerrar_parrafo()
+                cerrar_lista()
+                nivel = len(encabezado.group(1)) + 2
+                resultado.append(
+                    f'<h{nivel}>{cls._markdown_inline(encabezado.group(2))}</h{nivel}>'
+                )
+                continue
+
+            item = re.match(r"^[-*+]\s+(.+)$", texto)
+            item_ordenado = re.match(r"^\d+[.)]\s+(.+)$", texto)
+            if item or item_ordenado:
+                cerrar_parrafo()
+                tipo = "ul" if item else "ol"
+                if lista != tipo:
+                    cerrar_lista()
+                    resultado.append(f"<{tipo}>")
+                    lista = tipo
+                contenido_item = (item or item_ordenado).group(1)
+                resultado.append(f'<li>{cls._markdown_inline(contenido_item)}</li>')
+                continue
+
+            if texto.startswith("> "):
+                cerrar_parrafo()
+                cerrar_lista()
+                resultado.append(
+                    f'<blockquote>{cls._markdown_inline(texto[2:])}</blockquote>'
+                )
+                continue
+
+            cerrar_lista()
+            parrafo.append(texto)
+
+        cerrar_parrafo()
+        cerrar_lista()
+        return "\n".join(resultado)
+
+    @classmethod
+    def _markdown_inline(cls, contenido: str) -> str:
+        """Escapa inline Markdown y permite únicamente enlaces http(s)."""
         escapado = cls._esc(contenido)
-        # Convertimos **negrita** en <strong> después de escapar,
-        # así no hay riesgo de que el propio contenido inyecte HTML.
-        return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escapado)
+        protegidos = []
+
+        def proteger(valor: str) -> str:
+            protegidos.append(valor)
+            return f"\x00{len(protegidos) - 1}\x00"
+
+        escapado = re.sub(
+            r"`([^`]+)`",
+            lambda m: proteger(f"<code>{m.group(1)}</code>"),
+            escapado,
+        )
+        escapado = re.sub(
+            r"\[([^\]]+)\]\((https?://[^\s)]+)\)",
+            lambda m: proteger(
+                f'<a href="{m.group(2)}" target="_blank" rel="noopener noreferrer">'
+                f"{m.group(1)}</a>"
+            ),
+            escapado,
+        )
+
+        def reemplazar_negrita(match):
+            return f"<strong>{match.group(1) or match.group(2)}</strong>"
+
+        def reemplazar_cursiva(match):
+            return f"<em>{match.group(1) or match.group(2)}</em>"
+
+        escapado = re.sub(
+            r"\*\*(.+?)\*\*|__(.+?)__",
+            reemplazar_negrita,
+            escapado,
+        )
+        escapado = re.sub(
+            r"(?<!\*)\*([^*]+)\*(?!\*)|(?<!_)_([^_]+)_(?!_)",
+            reemplazar_cursiva,
+            escapado,
+        )
+        escapado = re.sub(r"~~(.+?)~~", r"<del>\1</del>", escapado)
+        for indice, valor in enumerate(protegidos):
+            escapado = escapado.replace(f"\x00{indice}\x00", valor)
+        return escapado
 
     @classmethod
     def _parsear_risk_score(cls, contenido: str):
@@ -226,13 +326,15 @@ class HTMLExporter:
     <title>Informe de Auditoría OSINT - {target_esc}</title>
     <style>
         :root {{
-            --primary: #0f172a;
-            --primary-light: #1e293b;
-            --accent: #2563eb;
-            --border: #e2e8f0;
-            --bg-body: #f8fafc;
+            --primary: #172554;
+            --primary-light: #1e3a8a;
+            --accent: #00cfff;
+            --accent-secondary: #a855f7;
+            --accent-soft: #e6faff;
+            --border: #dbeafe;
+            --bg-body: #ffffff;
             --bg-card: #ffffff;
-            --text-dark: #0f172a;
+            --text-dark: #172554;
             --text-muted: #64748b;
 
             --sev-high-bg: #fef2f2;
@@ -255,12 +357,12 @@ class HTMLExporter:
         * {{ box-sizing: border-box; }}
 
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background-color: var(--bg-body);
+            font-family: Georgia, "Times New Roman", serif;
+            background: #ffffff;
             color: var(--text-dark);
             margin: 0;
-            padding: 2.5rem 1rem;
-            line-height: 1.5;
+            padding: 3rem 1rem;
+            line-height: 1.55;
         }}
 
         .report-paper {{
@@ -269,41 +371,51 @@ class HTMLExporter:
             background: var(--bg-card);
             border: 1px solid var(--border);
             border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
-            padding: 3rem;
+            box-shadow: 0 10px 30px rgba(23, 37, 84, 0.08);
+            padding: 3.25rem;
         }}
 
         /* Header oficial */
         .header-bar {{
+            position: relative;
             display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            border-bottom: 2px solid var(--primary);
-            padding-bottom: 1.5rem;
-            margin-bottom: 1.5rem;
+            justify-content: center;
+            align-items: center;
+            border-bottom: 2px solid var(--accent);
+            padding-bottom: 1.75rem;
+            margin-bottom: 1.75rem;
+            text-align: center;
+            z-index: 1;
         }}
 
         .brand-title {{
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 0.75rem;
         }}
 
         .brand-logo {{
-            background: var(--primary);
-            color: white;
-            font-weight: 800;
-            font-size: 1.25rem;
-            padding: 0.4rem 0.8rem;
-            border-radius: 6px;
-            letter-spacing: 0.05em;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 86px;
+            height: 86px;
+            object-fit: contain;
         }}
 
         .header-title h1 {{
             margin: 0;
-            font-size: 1.6rem;
+            font-size: 1.5rem;
             color: var(--primary);
-            letter-spacing: -0.02em;
+            letter-spacing: 0;
+            font-weight: 700;
+        }}
+
+        .header-title {{
+            width: calc(100% - 220px);
+            max-width: 760px;
+            margin: 0 auto;
         }}
 
         .header-title .subtitle {{
@@ -313,38 +425,46 @@ class HTMLExporter:
         }}
 
         .header-actions {{
+            position: absolute;
+            top: 0;
+            right: 0;
             display: flex;
             flex-direction: column;
-            align-items: flex-end;
+            align-items: stretch;
             gap: 0.5rem;
+            width: 200px;
         }}
 
         .confidential-tag {{
-            background-color: #ef4444;
+            background-color: var(--accent-secondary);
             color: #ffffff;
-            font-size: 0.7rem;
+            font-size: 0.62rem;
             font-weight: 800;
-            padding: 0.25rem 0.6rem;
+            padding: 0.24rem 0.35rem;
             border-radius: 4px;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
+            letter-spacing: 0.05em;
+            text-align: center;
+            white-space: nowrap;
         }}
 
         .btn-print {{
             background: #ffffff;
-            border: 1px solid var(--border);
+            border: 1px solid var(--accent);
             color: var(--text-dark);
-            padding: 0.4rem 0.9rem;
-            font-size: 0.85rem;
+            width: 100%;
+            padding: 0.34rem 0.55rem;
+            font-size: 0.78rem;
             font-weight: 600;
             border-radius: 6px;
             cursor: pointer;
             transition: all 0.2s;
+            white-space: nowrap;
         }}
 
         .btn-print:hover {{
-            background: var(--bg-body);
-            border-color: var(--text-muted);
+            background: var(--accent-soft);
+            border-color: var(--primary-light);
         }}
 
         /* Nota del chat CLI */
@@ -352,10 +472,10 @@ class HTMLExporter:
             display: flex;
             align-items: center;
             gap: 0.6rem;
-            background: #eff6ff;
-            border: 1px solid #bfdbfe;
-            color: #1e40af;
-            border-radius: 6px;
+            background: var(--accent-soft);
+            border: 1px solid #a5f3fc;
+            color: var(--primary-light);
+            border-radius: 8px;
             padding: 0.7rem 1rem;
             font-size: 0.85rem;
             margin-bottom: 2rem;
@@ -377,9 +497,9 @@ class HTMLExporter:
         }}
 
         .kpi-card {{
-            background: var(--bg-body);
+            background: #ffffff;
             border: 1px solid var(--border);
-            border-radius: 6px;
+            border-radius: 8px;
             padding: 1.2rem;
             text-align: center;
         }}
@@ -407,6 +527,7 @@ class HTMLExporter:
             margin: 2.5rem 0 1.2rem 0;
             padding-bottom: 0.5rem;
             border-bottom: 1px solid var(--border);
+            letter-spacing: 0.02em;
         }}
 
         /* Panel de Risk Score */
@@ -414,7 +535,7 @@ class HTMLExporter:
             display: grid;
             grid-template-columns: 260px 1fr;
             gap: 2rem;
-            background: var(--bg-body);
+            background: linear-gradient(110deg, #f0fdfa, #f8fafc);
             border: 1px solid var(--border);
             border-radius: 8px;
             padding: 1.5rem 1.75rem;
@@ -469,7 +590,6 @@ class HTMLExporter:
         .risk-detail {{
             font-size: 0.92rem;
             color: #334155;
-            white-space: pre-line;
             line-height: 1.6;
             border-left: 1px solid var(--border);
             padding-left: 1.75rem;
@@ -484,7 +604,7 @@ class HTMLExporter:
         }}
 
         .chart-card {{
-            background: var(--bg-body);
+            background: #fbfdfc;
             border: 1px solid var(--border);
             border-radius: 8px;
             padding: 1.5rem;
@@ -601,7 +721,7 @@ class HTMLExporter:
         }}
 
         .insight-card {{
-            background: var(--bg-body);
+            background: #fbfdfc;
             border: 1px solid var(--border);
             border-left: 4px solid var(--accent);
             border-radius: 4px;
@@ -618,9 +738,34 @@ class HTMLExporter:
         .insight-card .content {{
             font-size: 0.92rem;
             color: #334155;
-            white-space: pre-line;
             line-height: 1.6;
         }}
+
+        .content p, .risk-detail p {{ margin: 0 0 0.8rem; }}
+        .content p:last-child, .risk-detail p:last-child {{ margin-bottom: 0; }}
+        .content h3, .content h4, .risk-detail h3, .risk-detail h4 {{
+            color: var(--primary);
+            margin: 1rem 0 0.45rem;
+            font-family: "Trebuchet MS", sans-serif;
+        }}
+        .content h3, .risk-detail h3 {{ font-size: 1.05rem; }}
+        .content h4, .risk-detail h4 {{ font-size: 0.95rem; }}
+        .content ul, .content ol, .risk-detail ul, .risk-detail ol {{
+            margin: 0.45rem 0 0.9rem;
+            padding-left: 1.35rem;
+        }}
+        .content li, .risk-detail li {{ margin: 0.25rem 0; }}
+        .content blockquote, .risk-detail blockquote {{
+            border-left: 3px solid var(--accent);
+            color: var(--text-muted);
+            margin: 0.7rem 0;
+            padding-left: 0.9rem;
+        }}
+        .content code, .risk-detail code {{
+            background: var(--accent-soft);
+            color: #115e59;
+        }}
+        .content a, .risk-detail a {{ color: var(--accent); font-weight: 700; }}
 
         /* Controles de Filtro */
         .filter-container {{
@@ -704,6 +849,19 @@ class HTMLExporter:
             .risk-panel, .chart-card {{ page-break-inside: avoid; }}
             tr {{ page-break-inside: avoid; }}
         }}
+
+        @media (max-width: 760px) {{
+            body {{ padding: 1rem 0.5rem; }}
+            .report-paper {{ padding: 1.25rem; border-radius: 8px; }}
+            .header-bar {{ flex-direction: column; gap: 1rem; padding-top: 3.5rem; }}
+            .brand-title {{ flex-direction: column; }}
+            .header-title {{ width: 100%; max-width: none; }}
+            .header-actions {{ top: 0; right: 0; align-items: flex-end; }}
+            .kpi-grid, .charts-grid, .risk-panel {{ grid-template-columns: 1fr; }}
+            .risk-detail {{ border-left: 0; border-top: 1px solid var(--border); padding: 1rem 0 0; }}
+            .filter-container {{ flex-direction: column; align-items: stretch; }}
+            table {{ display: block; overflow-x: auto; white-space: nowrap; }}
+        }}
     </style>
 </head>
 <body>
@@ -711,9 +869,9 @@ class HTMLExporter:
     <div class="report-paper">
         <!-- Encabezado Oficial -->
         <div class="header-bar">
-            <div>
+            <div class="header-title">
                 <div class="brand-title">
-                    <span class="brand-logo">ARGOSMIND</span>
+                    <img class="brand-logo" src="assets/argosmind-logo.png" alt="ArgosMind">
                     <h1>Informe Técnico de Reconocimiento OSINT</h1>
                 </div>
                 <div class="subtitle">Objetivo auditado: <strong>{target_esc}</strong></div>
