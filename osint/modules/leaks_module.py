@@ -17,8 +17,8 @@ class LeaksModule(BaseModule):
     disponible, con más de 12 mil millones de cuentas comprometidas indexadas.
 
     En caso de no disponer de una API key de HIBP, el módulo consulta
-    la alternativa gratuita breach.directory, que tiene un límite de
-    10 búsquedas diarias, suficiente para pruebas y demos.
+        BreachDirectory a través de RapidAPI usando sus credenciales y
+        sus límites del plan contratado.
 
     El módulo busca:
     - Brechas de seguridad donde aparece el dominio del objetivo,
@@ -38,8 +38,9 @@ class LeaksModule(BaseModule):
     HIBP_DOMAIN_URL = "https://haveibeenpwned.com/api/v3/breacheddomain/{domain}"
     HIBP_BREACH_URL = "https://haveibeenpwned.com/api/v3/breach/{name}"
 
-    # URL de breach.directory — gratuito sin API key, 10 búsquedas/día
-    BREACH_DIRECTORY_URL = "https://breachdirectory.org/api?func=auto&term={domain}"
+    # API de BreachDirectory publicada en RapidAPI.
+    BREACH_DIRECTORY_URL = "https://breachdirectory.p.rapidapi.com/"
+    BREACH_DIRECTORY_HOST = "breachdirectory.p.rapidapi.com"
 
     # Tipos de datos en una filtración que implican mayor riesgo
     DATOS_CRITICOS = {
@@ -69,12 +70,12 @@ class LeaksModule(BaseModule):
         """
         dominio = self._extraer_dominio_raiz(target)
 
-        key = self.config.get_api_key("hibp")
-        if key:
+        hibp_key = self.config.get_api_key("hibp")
+        if hibp_key:
             # HIBP tiene datos más completos y verificados
             await self._consultar_brechas_dominio(dominio)
         else:
-            # breach.directory como alternativa gratuita sin key
+            # BreachDirectory a través de RapidAPI
             await self._consultar_breach_directory(dominio)
 
         return self.findings
@@ -313,20 +314,34 @@ class LeaksModule(BaseModule):
         """
         Consulta breach.directory como alternativa gratuita a HIBP.
 
-        breach.directory es una base de datos pública de filtraciones
-        que no requiere API key ni registro. Tiene un límite de
-        10 búsquedas diarias en el tier gratuito.
+        BreachDirectory se consume mediante RapidAPI. La API key y el
+        host se leen desde la configuración local del proyecto.
 
         La respuesta incluye si el dominio aparece en filtraciones
         conocidas y una muestra de los registros encontrados.
         """
-        url = self.BREACH_DIRECTORY_URL.format(domain=dominio)
+        key = self.config.get_api_key("breachdirectory")
+        host = (
+            self.config.get_api_key("breachdirectory_host")
+            or self.BREACH_DIRECTORY_HOST
+        )
         headers = {"User-Agent": "osint-framework-tfg"}
+        if key:
+            headers.update(
+                {
+                    "X-RapidAPI-Key": key,
+                    "X-RapidAPI-Host": host,
+                }
+            )
         timeout = aiohttp.ClientTimeout(total=15)
 
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, headers=headers) as r:
+                async with session.get(
+                    self.BREACH_DIRECTORY_URL,
+                    params={"func": "domain", "term": dominio},
+                    headers=headers,
+                ) as r:
                     if r.status == 429:
                         # Límite diario alcanzado
                         self.add_finding(
@@ -341,13 +356,26 @@ class LeaksModule(BaseModule):
                         )
                         return
                     if r.status != 200:
+                        self.add_finding(
+                            type="leaks_provider_error",
+                            value=dominio,
+                            severity=Severity.INFO,
+                            source="breachdirectory",
+                            metadata={"http_status": r.status},
+                        )
                         return
                     data = await r.json()
 
             self._procesar_breach_directory(data, dominio)
 
-        except Exception:
-            pass
+        except Exception as error:
+            self.add_finding(
+                type="leaks_provider_error",
+                value=dominio,
+                severity=Severity.INFO,
+                source="breachdirectory",
+                metadata={"error": type(error).__name__},
+            )
 
     def _procesar_breach_directory(self, data: dict, dominio: str):
         """
@@ -357,7 +385,8 @@ class LeaksModule(BaseModule):
         y una lista result con los registros encontrados. Cada registro
         incluye el email o usuario comprometido y la fuente de la filtración.
         """
-        encontrado = data.get("found", False)
+        resultados = data.get("result", [])
+        encontrado = data.get("found", bool(resultados))
 
         if not encontrado:
             self.add_finding(
@@ -369,7 +398,6 @@ class LeaksModule(BaseModule):
             )
             return
 
-        resultados = data.get("result", [])
         total = len(resultados)
 
         # Severidad según volumen de registros encontrados
