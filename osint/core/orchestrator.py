@@ -89,6 +89,7 @@ class Orchestrator:
             return
 
         self._modules.append(module)
+        self.datastore.register_module(module.name)
         log.debug("modulo_registrado", modulo=module.name)
 
     # Ejecuta todos los módulos registrados en paralelo contra el objetivo
