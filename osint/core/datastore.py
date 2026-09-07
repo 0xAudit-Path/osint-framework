@@ -47,6 +47,11 @@ class DataStore:
     def __init__(self):
         self._findings: list[Finding] = []
         self._seen: set[str] = set()
+        self._modules_run: set[str] = set()
+
+    def register_module(self, module: str) -> None:
+        """Registra un módulo aunque no produzca hallazgos."""
+        self._modules_run.add(module)
 
     # Agregar hallazgo
     def add(self, finding: Finding) -> bool:
@@ -83,7 +88,9 @@ class DataStore:
         return {
             "total": len(self._findings),
             "by_severity": dict(counts),
-            "modules_run": list({f.module for f in self._findings}),
+            "modules_run": sorted(
+                self._modules_run | {f.module for f in self._findings}
+            ),
         }
 
     # Convertir a diccionario
@@ -116,6 +123,8 @@ class DataStore:
                 metadata=f_data.get("metadata", {}),
             )
             ds.add(finding)
+        for module in data.get("summary", {}).get("modules_run", []):
+            ds.register_module(module)
         return ds
 
     def calculate_static_risk(self) -> dict:
