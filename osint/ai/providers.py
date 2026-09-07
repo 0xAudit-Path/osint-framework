@@ -108,7 +108,10 @@ class OllamaProvider(BaseProvider):
             "model": self.model,
             "prompt": prompt_completo,
             "stream": False,
-            "options": {"temperature": temperature}
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
         }
 
         timeout = aiohttp.ClientTimeout(total=90)
