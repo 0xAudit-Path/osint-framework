@@ -120,7 +120,7 @@ Sé directo y técnico. No repitas los datos crudos, interprétalos.""",
         response = await self.provider.complete(
             messages=messages,
             temperature=0.2,
-            max_tokens=600,
+            max_tokens=900,
         )
 
         return AIInsight(
@@ -197,7 +197,7 @@ Si no hay correlaciones claras, indícalo.""",
         response = await self.provider.complete(
             messages=messages,
             temperature=0.2,
-            max_tokens=700,
+            max_tokens=1000,
         )
 
         return AIInsight(
@@ -248,7 +248,7 @@ Prioriza dorks que busquen:
         response = await self.provider.complete(
             messages=messages,
             temperature=0.4,
-            max_tokens=600,
+            max_tokens=900,
         )
 
         return AIInsight(
@@ -290,7 +290,7 @@ Prioriza dorks que busquen:
         response = await self.provider.complete(
             messages=messages,
             temperature=0.1,
-            max_tokens=350,
+            max_tokens=500,
         )
 
         content = self._parsear_risk_score(response.content)
@@ -331,7 +331,36 @@ Prioriza dorks que busquen:
         un contexto limitado. Conservamos todos los HIGH y priorizamos los
         hallazgos de menor severidad con límites progresivos.
         """
-        lineas = [f"Objetivo: {target}", ""]
+        lineas = [f"Objetivo: {target}", "", "Resumen por módulo:"]
+
+        modulos = sorted(
+            set(datastore.summary().get("modules_run", []))
+            | {finding.module for finding in datastore}
+        )
+        for modulo in modulos:
+            hallazgos_modulo = datastore.by_module(modulo)
+            por_severidad: dict[str, int] = {}
+            por_tipo: dict[str, int] = {}
+            for finding in hallazgos_modulo:
+                por_severidad[finding.severity] = (
+                    por_severidad.get(finding.severity, 0) + 1
+                )
+                por_tipo[finding.type] = por_tipo.get(finding.type, 0) + 1
+
+            severidades = ", ".join(
+                f"{severidad}={cantidad}"
+                for severidad, cantidad in sorted(por_severidad.items())
+            ) or "sin datos"
+            tipos = ", ".join(
+                f"{tipo}={cantidad}"
+                for tipo, cantidad in sorted(por_tipo.items())
+            ) or "sin datos"
+            lineas.append(
+                f"  • [{modulo}] {len(hallazgos_modulo)} hallazgos | "
+                f"severidad: {severidades} | tipos: {tipos}"
+            )
+
+        lineas.append("")
 
         limites = {
             Severity.HIGH:   None,
