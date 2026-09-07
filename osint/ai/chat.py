@@ -189,7 +189,7 @@ class InteractiveChat:
             Text("▌", style="cyan"),
             console=console,
             refresh_per_second=15,
-            transient=True,  # se reemplaza por el panel final al terminar
+            transient=False,
         ) as live:
             async for chunk in self.provider.stream(
                 messages=messages,
@@ -201,19 +201,16 @@ class InteractiveChat:
                 # Actualizamos el Live cada ~30 chars para no sobrecargar el render
                 if len(acumulado) % 30 == 0 or chunk.finished:
                     cursor = "" if chunk.finished else "▌"
-                    live.update(Markdown(acumulado + cursor))
+                    live.update(
+                        Panel(
+                            Markdown(acumulado + cursor),
+                            border_style="dim",
+                            padding=(0, 1),
+                        )
+                    )
 
                 if chunk.finished:
                     break
-
-        # Renderizado final limpio sin el cursor
-        console.print(
-            Panel(
-                Markdown(acumulado),
-                border_style="dim",
-                padding=(0, 1),
-            )
-        )
 
         return acumulado
 
