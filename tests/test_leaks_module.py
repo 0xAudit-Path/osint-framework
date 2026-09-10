@@ -21,6 +21,18 @@ def config_sin_key():
 
 
 @pytest.fixture
+def config_con_rapidapi():
+    """Configuración con credenciales de BreachDirectory en RapidAPI."""
+    config = MagicMock()
+    config.get_api_key.side_effect = lambda key: {
+        "breachdirectory": "test_rapidapi_key",
+        "breachdirectory_host": "breachdirectory.p.rapidapi.com",
+    }.get(key)
+    config.network.timeout = 5
+    return config
+
+
+@pytest.fixture
 def config_con_hibp():
     """Configuración con API key de HIBP."""
     config = MagicMock()
@@ -470,17 +482,43 @@ async def test_breach_directory_error_red_no_falla(modulo_sin_key):
     with patch("aiohttp.ClientSession", side_effect=Exception("Timeout")):
         await modulo_sin_key._consultar_breach_directory("ejemplo.com")
 
-    assert len(modulo_sin_key.findings) == 0
+    errores = [
+        f for f in modulo_sin_key.findings if f.type == "leaks_provider_error"
+    ]
+    assert len(errores) == 1
+    assert errores[0].metadata["error"] == "Exception"
 
 
 @pytest.mark.asyncio
 async def test_breach_directory_estado_no_200_no_falla(modulo_sin_key):
-    """Un estado HTTP inesperado se ignora sin crear findings."""
+    """Un estado HTTP inesperado se informa sin propagar errores."""
     mock_session = mock_sesion_http(500)
     with patch("aiohttp.ClientSession", return_value=mock_session):
         await modulo_sin_key._consultar_breach_directory("ejemplo.com")
 
-    assert modulo_sin_key.findings == []
+    errores = [
+        f for f in modulo_sin_key.findings if f.type == "leaks_provider_error"
+    ]
+    assert len(errores) == 1
+    assert errores[0].metadata["http_status"] == 500
+
+
+@pytest.mark.asyncio
+async def test_breach_directory_usa_headers_y_endpoint_rapidapi(config_con_rapidapi):
+    """La consulta de dominio usa la autenticación y parámetros de RapidAPI."""
+    modulo = LeaksModule(config_con_rapidapi)
+    mock_session = mock_sesion_http(200, BREACH_DIRECTORY_SIN_RESULTADOS)
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        await modulo._consultar_breach_directory("ejemplo.com")
+
+    llamada = mock_session.get.call_args
+    assert llamada.kwargs["params"] == {"func": "domain", "term": "ejemplo.com"}
+    assert llamada.kwargs["headers"]["X-RapidAPI-Key"] == "test_rapidapi_key"
+    assert (
+        llamada.kwargs["headers"]["X-RapidAPI-Host"]
+        == "breachdirectory.p.rapidapi.com"
+    )
 
 
 def test_breach_directory_severidad_high_muchos_resultados(modulo_sin_key):
